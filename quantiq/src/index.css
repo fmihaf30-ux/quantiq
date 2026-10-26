@@ -1,0 +1,129 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-primary: #0a0b0d;
+    --bg-card: #121418;
+    --bg-card-hover: #181b21;
+    --border-color: #222630;
+    --accent-lime: #c4f042;
+    --accent-purple: #8b5cf6;
+    --accent-cyan: #06b6d4;
+  }
+
+  [data-theme="light"],
+  .light {
+    --bg-primary: #f8fafc;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f1f5f9;
+    --border-color: #e2e8f0;
+    --accent-lime: #10b981;
+    --accent-purple: #7c3aed;
+    --accent-cyan: #0284c7;
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: #e2e8f0;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  [data-theme="light"] body,
+  .light body {
+    background-color: #f8fafc;
+    color: #0f172a;
+  }
+
+  code, pre {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Light Mode Global Utility Overrides */
+[data-theme="light"] .bg-\[\#07090e\],
+[data-theme="light"] .bg-\[\#0a0b0d\],
+[data-theme="light"] .bg-\[\#0c0e14\],
+[data-theme="light"] .bg-\[\#0c0f16\],
+[data-theme="light"] .bg-\[\#0e111a\],
+[data-theme="light"] .bg-\[\#07080b\],
+[data-theme="light"] .bg-\[\#090b10\] {
+  background-color: #f8fafc !important;
+}
+
+[data-theme="light"] .bg-\[\#121418\],
+[data-theme="light"] .bg-\[\#12151d\],
+[data-theme="light"] .bg-\[\#121622\],
+[data-theme="light"] .bg-\[\#0f121b\],
+[data-theme="light"] .bg-\[\#131522\],
+[data-theme="light"] .bg-\[\#13161e\],
+[data-theme="light"] .bg-\[\#141926\],
+[data-theme="light"] .bg-\[\#111520\],
+[data-theme="light"] .bg-\[\#0b0e15\],
+[data-theme="light"] .bg-\[\#151922\],
+[data-theme="light"] .bg-\[\#171c26\],
+[data-theme="light"] .bg-\[\#1a1f2c\] {
+  background-color: #ffffff !important;
+}
+
+[data-theme="light"] .border-\[\#1e2434\],
+[data-theme="light"] .border-\[\#181d28\],
+[data-theme="light"] .border-\[\#1f2535\],
+[data-theme="light"] .border-\[\#202738\],
+[data-theme="light"] .border-\[\#222a3d\],
+[data-theme="light"] .border-\[\#141824\],
+[data-theme="light"] .border-\[\#181b24\],
+[data-theme="light"] .border-\[\#1e222d\],
+[data-theme="light"] .border-\[\#222630\],
+[data-theme="light"] .border-\[\#2b3346\],
+[data-theme="light"] .border-\[\#1d2332\] {
+  border-color: #e2e8f0 !important;
+}
+
+[data-theme="light"] .text-white {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .text-slate-100,
+[data-theme="light"] .text-slate-200 {
+  color: #1e293b !important;
+}
+
+[data-theme="light"] .text-slate-300 {
+  color: #334155 !important;
+}
+
+[data-theme="light"] .text-slate-400,
+[data-theme="light"] .text-slate-500 {
+  color: #64748b !important;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0d0f12;
+}
+::-webkit-scrollbar-thumb {
+  background: #232732;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #343a49;
+}
+
+[data-theme="light"] ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

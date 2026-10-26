@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Production builds
+dist/
+**/dist/
+
+# Local backups & archives
+quantiq - Copy/
+quantiq - Copy.zip
+*.zip
+*.tar.gz
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
