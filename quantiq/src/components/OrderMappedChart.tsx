@@ -8,8 +8,8 @@ import {
   BoxSelect, 
   Sliders, 
   X, 
-  ShieldAlert,
-  Target
+  Target,
+  Sparkles
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import {
@@ -17,10 +17,8 @@ import {
   type CandleData,
   type TradeSignal,
   type SmcElements,
-  type SmcZone,
-  type SmcStructureBreak,
-  type SmcLiquidityZone,
 } from './pipnex-chart/PipnexLightweightChart';
+import { evaluatePipnexMarket, type PipnexOpportunity } from '../lib/pipnex';
 
 export interface OrderMappedChartProps {
   symbol: string;
@@ -52,12 +50,10 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
   const [activeTool, setActiveTool] = useState<'AUTO' | 'LONG' | 'SHORT'>('AUTO');
   const { theme } = useTheme();
 
-  const cleanSym = symbol.toUpperCase().replace('/', '').replace(/M$/, '');
-
   // 1. Fetch live candles on symbol or timeframe change
   const loadData = useCallback(async () => {
     try {
-      const data = await fetchLiveCandles(symbol, timeframe, 120);
+      const data = await fetchLiveCandles(symbol, timeframe, 140);
       if (data && data.length > 0) {
         setCandles(data);
       }
@@ -81,154 +77,38 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
   const priceChange = lastCandle && prevCandle ? lastCandle.close - prevCandle.close : 0;
   const priceChangePercent = prevCandle && prevCandle.close > 0 ? (priceChange / prevCandle.close) * 100 : 0;
 
-  // 2. Derive Institutional SMC Elements from latestSMCSetup or live candles
+  // 2. Run Deterministic Pipnex Mathematical Engine Suite
+  const pipnexOpportunity = useMemo<PipnexOpportunity | null>(() => {
+    if (!candles || candles.length < 20) return null;
+    return evaluatePipnexMarket(candles, {
+      symbol,
+      timeframe,
+      currentPrice: livePrice,
+      activePosition: activePosition
+        ? {
+            direction: activePosition.type.toLowerCase() === 'buy' ? 'LONG' : 'SHORT',
+            entryPrice: activePosition.openPrice || livePrice,
+            openTime: activePosition.openTime ? Math.floor(new Date(activePosition.openTime).getTime() / 1000) : undefined,
+            stopLoss: activePosition.stopLoss,
+            takeProfit: activePosition.takeProfit,
+          }
+        : null,
+    });
+  }, [candles, symbol, timeframe, livePrice, activePosition]);
+
+  // 3. Derive Institutional SMC Elements from Pipnex Mathematical Engine
   const smcElements: SmcElements = useMemo(() => {
-    if (!showZones || candles.length < 10) {
+    if (!showZones || !pipnexOpportunity) {
       return {};
     }
+    return pipnexOpportunity.smcElements;
+  }, [showZones, pipnexOpportunity]);
 
-    const recent = candles.slice(-60);
-    let highestHigh = -Infinity;
-    let lowestLow = Infinity;
-    let swingHighIdx = 0;
-    let swingLowIdx = 0;
-
-    recent.forEach((c, idx) => {
-      if (c.high > highestHigh) {
-        highestHigh = c.high;
-        swingHighIdx = idx;
-      }
-      if (c.low < lowestLow) {
-        lowestLow = c.low;
-        swingLowIdx = idx;
-      }
-    });
-
-    const supportZones: SmcZone[] = [];
-    const resistanceZones: SmcZone[] = [];
-    const orderBlocks: SmcZone[] = [];
-    const fairValueGaps: SmcZone[] = [];
-    const structureBreaks: SmcStructureBreak[] = [];
-    const liquidityZones: SmcLiquidityZone[] = [];
-
-    // Order Blocks & FVGs from latestSMCSetup
-    if (latestSMCSetup && latestSMCSetup.orderBlockPrice) {
-      const obPrice = Number(latestSMCSetup.orderBlockPrice);
-      const isBull = latestSMCSetup.bias !== 'bearish';
-      const spread = obPrice * 0.0012;
-      orderBlocks.push({
-        high: obPrice + spread,
-        low: Math.max(0, obPrice - spread),
-        label: isBull ? 'Bullish OB' : 'Bearish OB',
-        type: isBull ? 'ob_bullish' : 'ob_bearish',
-      });
-    } else if (swingLowIdx > 0 && lowestLow < Infinity) {
-      // Automatic Bullish OB around swing low
-      const obCandle = recent[swingLowIdx];
-      const obHeight = Math.max(obCandle.high - obCandle.low, livePrice * 0.0015);
-      orderBlocks.push({
-        high: obCandle.low + obHeight,
-        low: obCandle.low,
-        label: 'Bullish OB',
-        type: 'ob_bullish',
-      });
-    }
-
-    if (latestSMCSetup && latestSMCSetup.fvgLevel) {
-      const fvgPrice = Number(latestSMCSetup.fvgLevel);
-      const isBull = latestSMCSetup.bias !== 'bearish';
-      const spread = fvgPrice * 0.0008;
-      fairValueGaps.push({
-        high: fvgPrice + spread,
-        low: Math.max(0, fvgPrice - spread),
-        label: isBull ? 'Bullish FVG' : 'Bearish FVG',
-        type: isBull ? 'fvg_bullish' : 'fvg_bearish',
-      });
-    }
-
-    // Structure Breaks (BOS / CHoCH)
-    if (highestHigh > 0 && highestHigh < Infinity) {
-      structureBreaks.push({
-        price: highestHigh,
-        type: 'BOS',
-        direction: 'bullish',
-      });
-    }
-
-    // Key Support / Supply zones
-    if (lowestLow > 0 && lowestLow < Infinity) {
-      const supSpread = lowestLow * 0.001;
-      supportZones.push({
-        high: lowestLow,
-        low: Math.max(0, lowestLow - supSpread),
-        label: 'Key Support',
-        type: 'support',
-      });
-    }
-
-    if (highestHigh > 0 && highestHigh < Infinity) {
-      const resSpread = highestHigh * 0.001;
-      resistanceZones.push({
-        high: highestHigh + resSpread,
-        low: highestHigh,
-        label: 'HTF Supply',
-        type: 'resistance',
-      });
-    }
-
-    // Liquidity zones
-    if (highestHigh > 0 && highestHigh < Infinity) {
-      liquidityZones.push({
-        price: highestHigh,
-        type: 'buy_side',
-        label: 'Buy-side Liq (EQH)',
-      });
-    }
-
-    return {
-      supportZones,
-      resistanceZones,
-      orderBlocks,
-      fairValueGaps,
-      structureBreaks,
-      liquidityZones,
-    };
-  }, [showZones, candles, latestSMCSetup, livePrice]);
-
-  // 3. Derive Long/Short Trade Signal
+  // 4. Derive Long/Short Trade Signal with Stop-First Rule & Order Type
   const tradeSignal: TradeSignal | null = useMemo(() => {
     if (!showSignalLevels || livePrice <= 0) return null;
 
-    // A. Active MT5 Position (Executed Market Order -> locks onto candle)
-    if (activePosition) {
-      const isLong = activePosition.type.toLowerCase() === 'buy';
-      const entry = activePosition.openPrice || livePrice;
-      const defaultDist = entry * 0.004;
-      const stopLoss = activePosition.stopLoss && activePosition.stopLoss > 0
-        ? activePosition.stopLoss
-        : isLong ? entry - defaultDist : entry + defaultDist;
-      const takeProfit1 = activePosition.takeProfit && activePosition.takeProfit > 0
-        ? activePosition.takeProfit
-        : isLong ? entry + defaultDist * 2.5 : entry - defaultDist * 2.5;
-
-      const entryTime = activePosition.openTime
-        ? Math.floor(new Date(activePosition.openTime).getTime() / 1000)
-        : undefined;
-
-      return {
-        direction: isLong ? 'LONG' : 'SHORT',
-        entry,
-        stopLoss,
-        takeProfit1,
-        confidence: 0.92,
-        strategy: `MT5 #${activePosition.ticket}`,
-        orderType: 'MARKET',
-        entryTime,
-        ticket: activePosition.ticket,
-      };
-    }
-
-    // B. Manual Tool Override (Trader clicked ▲ Long Tool or ▼ Short Tool)
+    // A. Manual Tool Override (Trader clicked ▲ Long Tool or ▼ Short Tool)
     if (activeTool === 'LONG') {
       const entry = previewLimitPrice || livePrice;
       const risk = entry * 0.0035;
@@ -259,8 +139,8 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
       };
     }
 
-    // C. Autonomous Trish AI SMC Setup
-    if (latestSMCSetup && latestSMCSetup.entry > 0) {
+    // B. Autonomous Trish AI SMC Setup Override if explicitly provided and no active MT5 position
+    if (!activePosition && latestSMCSetup && latestSMCSetup.entry > 0) {
       const isLong = latestSMCSetup.bias !== 'bearish';
       const entry = previewLimitPrice || latestSMCSetup.entry;
       const stopLoss = latestSMCSetup.stopLoss || (isLong ? entry * 0.996 : entry * 1.004);
@@ -284,26 +164,22 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
       };
     }
 
-    // D. Default High-Probability Institutional SMC Preview
-    const recent = candles.slice(-40);
-    if (recent.length > 5) {
-      const swingLow = Math.min(...recent.map((c) => c.low));
-      const swingHigh = Math.max(...recent.map((c) => c.high));
-      const isTrendBullish = (lastCandle?.close ?? 0) >= (recent[0]?.open ?? 0);
-      const entry = livePrice;
-      const slDist = Math.max(Math.abs(entry - (isTrendBullish ? swingLow : swingHigh)), entry * 0.003);
-      const stopLoss = isTrendBullish ? entry - slDist : entry + slDist;
-      const takeProfit1 = isTrendBullish ? entry + slDist * 2.6 : entry - slDist * 2.6;
-      const isLimit = isLimitMode;
+    // C. Deterministic Pipnex Mathematical Engine Winning Primary Setup (or Active MT5 Position)
+    if (pipnexOpportunity) {
+      const isLimit = isLimitMode || pipnexOpportunity.orderType === 'LIMIT' || (previewLimitPrice !== null && previewLimitPrice !== undefined);
+      const entry = (previewLimitPrice && !activePosition) ? previewLimitPrice : pipnexOpportunity.entry;
 
       return {
-        direction: isTrendBullish ? 'LONG' : 'SHORT',
+        direction: pipnexOpportunity.direction,
         entry,
-        stopLoss,
-        takeProfit1,
-        confidence: 0.87,
-        strategy: isLimit ? 'SMC Limit Setup' : 'SMC Market Setup',
+        stopLoss: pipnexOpportunity.stopLoss,
+        takeProfit1: pipnexOpportunity.takeProfit1,
+        takeProfit2: pipnexOpportunity.takeProfit2,
+        confidence: pipnexOpportunity.confidence,
+        strategy: activePosition ? `MT5 #${activePosition.ticket} (${pipnexOpportunity.strategy})` : pipnexOpportunity.strategy,
         orderType: isLimit ? 'LIMIT' : 'MARKET',
+        entryTime: pipnexOpportunity.entryTime,
+        ticket: activePosition?.ticket,
       };
     }
 
@@ -314,9 +190,8 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     previewLimitPrice,
     isLimitMode,
     latestSMCSetup,
-    candles,
+    pipnexOpportunity,
     livePrice,
-    lastCandle,
     showSignalLevels,
   ]);
 
@@ -326,7 +201,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
       <div className={`flex flex-wrap items-center justify-between px-3 py-2 border-b text-xs font-mono gap-2 ${
         theme === 'light' ? 'bg-slate-50 border-slate-200 text-slate-800' : 'border-[#141824] bg-[#0c0f17] text-slate-200'
       }`}>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <span className={`font-extrabold text-sm ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>{symbol}</span>
           <span className={`rounded px-2 py-0.5 text-[11px] font-bold border ${
             theme === 'light' ? 'bg-white text-slate-700 border-slate-300' : 'bg-[#1a1f2c] text-purple-300 border-purple-500/30'
@@ -341,6 +216,17 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
               <span className={`font-semibold ${priceChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {priceChange >= 0 ? '+' : ''}
                 {priceChange.toFixed(2)} ({priceChangePercent.toFixed(2)}%)
+              </span>
+            </div>
+          )}
+
+          {/* Pipnex Engine Strategy Badge */}
+          {pipnexOpportunity && (
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-purple-500/10 border border-purple-500/30 text-[11px] font-bold text-purple-300">
+              <Sparkles className="h-3 w-3 text-purple-400" />
+              <span>{pipnexOpportunity.strategy}</span>
+              <span className="bg-purple-950/80 px-1.5 py-0.2 rounded text-emerald-400 border border-purple-700/50">
+                {pipnexOpportunity.riskReward}R
               </span>
             </div>
           )}

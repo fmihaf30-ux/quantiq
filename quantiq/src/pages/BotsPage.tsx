@@ -8,6 +8,7 @@ import { fetchLiveMarketPrice, formatSymbolPrice } from '../lib/livePrices';
 import { executeMetaApiTrade, fetchLivePendingOrders, cancelPendingOrder, type LivePendingOrder } from '../lib/metaapi';
 import { autonomousEngine, type AutonomousEngineStatus } from '../lib/autonomousEngine';
 import { OrderMappedChart } from '../components/OrderMappedChart';
+import { getActiveTradingViewChart, drawNativeTradingViewPosition } from '../lib/pipnex';
 import type { ChartAnalysis, TradeSetup } from '@engine';
 import { 
   Bot, 
@@ -406,6 +407,44 @@ export const BotsPage: React.FC = () => {
   } : null);
 
   const isLong = activeMappedPosition ? activeMappedPosition.type === 'buy' : latestAnalysis?.bias !== 'bearish';
+
+  const [tvSyncStatus, setTvSyncStatus] = useState<string | null>(null);
+
+  const handleSyncToTradingView = async () => {
+    const entry = activeMappedPosition?.openPrice || (engineStatus.latestSMCSetup?.entry || livePrice);
+    const stop = (activeMappedPosition?.stopLoss && activeMappedPosition.stopLoss > 0)
+      ? activeMappedPosition.stopLoss
+      : (engineStatus.latestSMCSetup?.stopLoss || (isLong ? entry * 0.996 : entry * 1.004));
+    const target = (activeMappedPosition?.takeProfit && activeMappedPosition.takeProfit > 0)
+      ? activeMappedPosition.takeProfit
+      : (engineStatus.latestSMCSetup?.takeProfit || (isLong ? entry * 1.01 : entry * 0.99));
+    const side: 'long' | 'short' = isLong ? 'long' : 'short';
+
+    const tvChart = getActiveTradingViewChart();
+    if (tvChart) {
+      const res = await drawNativeTradingViewPosition(tvChart, {
+        side,
+        entry,
+        stop,
+        target,
+      });
+      if (res.ok) {
+        setTvSyncStatus('Synced native tool to TradingView!');
+        setTimeout(() => setTvSyncStatus(null), 4000);
+        return;
+      }
+    }
+
+    // Fallback: copy Pine Script levels to clipboard
+    const pine = `//@version=5\nindicator("Pipnex Trade Lens Setup", overlay=true)\nentryLine = line.new(bar_index - 50, ${entry}, bar_index + 50, ${entry}, color=color.blue, width=2)\nslLine = line.new(bar_index - 50, ${stop}, bar_index + 50, ${stop}, color=color.red, style=line.style_dashed, width=2)\ntpLine = line.new(bar_index - 50, ${target}, bar_index + 50, ${target}, color=color.green, style=line.style_dashed, width=2)`;
+    try {
+      await navigator.clipboard.writeText(pine);
+      setTvSyncStatus('TradingView Pine Script copied to clipboard!');
+    } catch {
+      setTvSyncStatus(`Levels: Entry ${entry.toFixed(2)} | SL ${stop.toFixed(2)} | TP ${target.toFixed(2)}`);
+    }
+    setTimeout(() => setTvSyncStatus(null), 4500);
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0b0d] p-4 sm:p-8 space-y-8">
@@ -1266,6 +1305,22 @@ export const BotsPage: React.FC = () => {
               <span>TradingView.com</span>
               <ExternalLink className="h-3 w-3 text-purple-400" />
             </a>
+
+            {/* Sync Native Setup to TradingView Studio */}
+            <button
+              onClick={handleSyncToTradingView}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-[11px] font-bold transition-all ${
+                tvSyncStatus
+                  ? 'bg-purple-600 text-white border-purple-400 shadow-[0_0_12px_rgba(168,85,247,0.4)]'
+                  : theme === 'light'
+                    ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm'
+                    : 'bg-[#121622] border-[#222a3d] text-slate-300 hover:text-white hover:border-purple-500/50'
+              }`}
+              title="Inject native Long/Short position tool into active TradingView instance or copy Pine Script"
+            >
+              <Sparkles className="h-3 w-3 text-purple-400" />
+              <span>{tvSyncStatus ? tvSyncStatus : 'Sync to TV'}</span>
+            </button>
 
             {/* Expand / Maximize Chart View */}
             <button
