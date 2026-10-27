@@ -30,14 +30,23 @@ Always output strict JSON with the following structure:
   "risks": ["Risk factor 1", "Risk factor 2"]
 }`;
 
+export interface ScaleInContext {
+  primaryTicket: number;
+  primaryDirection: 'buy' | 'sell';
+  primaryEntryPrice: number;
+  currentR: number;
+}
+
 export async function analyzeChartImageOrCandles(params: {
   symbol: string;
   timeframe: string;
   candles?: Candle[];
   chartImageBase64?: string;
   userQuery?: string;
+  scaleInContext?: ScaleInContext;
+  exhaustedPriceZones?: number[];
 }): Promise<ChartAnalysis> {
-  const { symbol, timeframe, candles = [], chartImageBase64, userQuery } = params;
+  const { symbol, timeframe, candles = [], chartImageBase64, userQuery, scaleInContext, exhaustedPriceZones = [] } = params;
 
   // Fetch real current live market quote
   const liveMarket = await fetchLiveMarketPrice(symbol);
@@ -50,7 +59,7 @@ export async function analyzeChartImageOrCandles(params: {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const parts: any[] = [];
-        const promptText = `${SMC_SYSTEM_PROMPT}
+        let promptText = `${SMC_SYSTEM_PROMPT}
 
 ASSET SYMBOL: ${symbol}
 TIMEFRAME: ${timeframe}
@@ -62,6 +71,20 @@ All generated trade setups (Entry, Stop Loss, Take Profit) and Key Levels MUST B
 Do NOT hallucinate outdated historical prices. The Entry must be within 0.2% of $${currentPrice.toFixed(decimals)}.
 
 User Inquiry: ${userQuery || 'Analyze the current chart structure, market bias, fair value gaps, and provide actionable SMC setups.'}`;
+
+        if (scaleInContext) {
+          promptText += `\n\nCRITICAL SMC SCALE-IN (PYRAMIDING) RULES:
+- There is already an active ${scaleInContext.primaryDirection.toUpperCase()} position running from $${scaleInContext.primaryEntryPrice.toFixed(decimals)} (+${scaleInContext.currentR.toFixed(1)}R locked at Breakeven).
+- You MUST generate a CONTINUATION ${scaleInContext.primaryDirection.toUpperCase()} setup following a new Break of Structure (BOS).
+- The Entry MUST BE ${scaleInContext.primaryDirection === 'buy' ? 'ABOVE' : 'BELOW'} $${scaleInContext.primaryEntryPrice.toFixed(decimals)} to confirm continuation (NO averaging down).
+- Stop Loss must protect the new structural higher-low / lower-high.`;
+        }
+
+        if (exhaustedPriceZones.length > 0) {
+          promptText += `\n\nCRITICAL EXHAUSTION NOTICE:
+The following price levels are ALREADY EXHAUSTED from recently mitigated trades: [${exhaustedPriceZones.map((p) => p.toFixed(decimals)).join(', ')}].
+DO NOT use these levels for entry. Look for a fresh unmitigated zone or higher-timeframe displacement.`;
+        }
 
         parts.push({ text: promptText });
 
@@ -118,7 +141,55 @@ User Inquiry: ${userQuery || 'Analyze the current chart structure, market bias, 
     }
   }
 
-  // 3. Fallback to deterministic local SMC reading with exact currentPrice anchoring
+  // 2. Check if current price is hovering inside an exhausted/spent Order Block
+  if (exhaustedPriceZones.length > 0 && exhaustedPriceZones.some((zp) => Math.abs(currentPrice - zp) / zp <= 0.0015)) {
+    return {
+      bias: 'neutral',
+      confidence: 'low',
+      summary: `Current spot price ($${currentPrice.toFixed(decimals)}) is hovering inside an exhausted Order Block from a previous mitigated trade. Awaiting fresh structure.`,
+      keyLevels: [
+        { price: Number(currentPrice.toFixed(decimals)), kind: 'order_block', note: 'Exhausted Order Block (Spent)' },
+      ],
+      setups: [],
+      risks: ['Mitigation zone is exhausted; high risk of fakeout or deeper pullback.'],
+      source: 'rules',
+    };
+  }
+
+  // 3. Fallback for Scale-In continuation
+  if (scaleInContext) {
+    const isBuy = scaleInContext.primaryDirection === 'buy';
+    const scaleSlOffset = currentPrice * 0.0025;
+    const scaleTpOffset = scaleSlOffset * 2.2;
+    const scaleSl = isBuy ? currentPrice - scaleSlOffset : currentPrice + scaleSlOffset;
+    const scaleTp = isBuy ? currentPrice + scaleTpOffset : currentPrice - scaleTpOffset;
+
+    const rawScaleSetups: TradeSetup[] = [
+      {
+        direction: scaleInContext.primaryDirection,
+        entry: Number(currentPrice.toFixed(decimals)),
+        stopLoss: Number(scaleSl.toFixed(decimals)),
+        takeProfit: Number(scaleTp.toFixed(decimals)),
+        rationale: `SMC Pyramiding Scale-In: Continuation ${scaleInContext.primaryDirection.toUpperCase()} after structural BOS expansion. Primary trade secured risk-free at BE (+${scaleInContext.currentR.toFixed(1)}R). 1:2.2 RR.`,
+      },
+    ];
+
+    return {
+      bias: isBuy ? 'bullish' : 'bearish',
+      confidence: 'high',
+      summary: `SMC continuation expansion confirmed for ${symbol}. Primary trade #${scaleInContext.primaryTicket} is secured at Breakeven. Scaling in on new intermediate structure.`,
+      keyLevels: [
+        { price: Number(scaleTp.toFixed(decimals)), kind: 'resistance', note: 'Continuation Take Profit Target' },
+        { price: Number(currentPrice.toFixed(decimals)), kind: 'order_block', note: 'Scale-In Mitigation Entry' },
+        { price: Number(scaleSl.toFixed(decimals)), kind: 'support', note: 'New Swing Structural Invalidation' },
+      ],
+      setups: sanitizeAndValidateSetups(rawScaleSetups, currentPrice, decimals, isBuy ? 'bullish' : 'bearish'),
+      risks: ['Primary trade Stop Loss must remain locked at Breakeven.'],
+      source: 'rules',
+    };
+  }
+
+  // 4. Standard fallback to deterministic local SMC reading with exact currentPrice anchoring
   const slOffset = currentPrice * 0.003;
   const tpOffset = slOffset * 2.2;
 

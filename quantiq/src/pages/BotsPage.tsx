@@ -812,14 +812,14 @@ export const BotsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Advanced Execution Strip: AI Order Dispatch Mode, Partial Profit, Post-Trade Cooldown */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#1a202c]">
+          {/* Advanced Execution Strip: AI Order Dispatch Mode, Partial Profit, Post-Exit Cooldown, SMC Scale-In */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-[#1a202c]">
             {/* AI Smart Order Dispatch Mode */}
             <div className="rounded-xl border border-[#202738] bg-[#090c12] p-2.5 space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-white flex items-center gap-1.5">
                   <Crosshair className="h-3.5 w-3.5 text-sky-400" />
-                  Order Dispatch Mode:
+                  Dispatch:
                 </span>
                 <span className="text-[10px] font-bold text-sky-400 uppercase">
                   {riskSettings.orderDispatchMode || 'AUTO'}
@@ -836,7 +836,7 @@ export const BotsPage: React.FC = () => {
                   }`}
                   title="AI evaluates distance from Order Block: places Limit if away, Market if tapping zone"
                 >
-                  AUTO (SMC)
+                  AUTO
                 </button>
                 <button
                   type="button"
@@ -871,8 +871,8 @@ export const BotsPage: React.FC = () => {
                 <span className="text-xs font-bold text-white block">Partial TP (+1.5R):</span>
                 <span className="text-[10px] text-slate-400">
                   {riskSettings.partialProfitClose !== false
-                    ? 'Closes 50% lots at +1.5R & trails remainder'
-                    : 'Holds 100% position until trailing SL or TP'}
+                    ? 'Closes 50% lots & trails remainder'
+                    : 'Holds 100% position until trailing SL'}
                 </span>
               </div>
               <button
@@ -888,25 +888,46 @@ export const BotsPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Trade Cooldown (Prevent Overtrading Churn) */}
-            <div className="rounded-xl border border-[#202738] bg-[#090c12] p-2.5 flex items-center justify-between gap-3">
+            {/* Post-Exit / BE Protection Lockout */}
+            <div className="rounded-xl border border-cyan-500/20 bg-[#090c12] p-2.5 flex items-center justify-between gap-3">
               <div>
-                <span className="text-xs font-bold text-white block">Post-Trade Cooldown:</span>
+                <span className="text-xs font-bold text-cyan-300 block">Post-Exit Lockout:</span>
                 <span className="text-[10px] text-slate-400">
-                  Prevents rapid churn on same asset
+                  Lockout after hitting BE / SL
                 </span>
               </div>
               <div className="flex items-center gap-1 bg-[#141924] border border-[#2b3346] px-2 py-0.5 rounded-lg">
                 <input
                   type="number"
-                  min="1"
-                  max="60"
-                  value={riskSettings.tradeCooldownMinutes || 5}
-                  onChange={(e) => handleUpdateRiskSettings({ tradeCooldownMinutes: Math.max(1, parseInt(e.target.value) || 5) })}
-                  className="w-8 bg-transparent font-mono font-bold text-sky-400 text-xs text-right focus:outline-none"
+                  min="5"
+                  max="120"
+                  value={riskSettings.postExitCooldownMinutes ?? 15}
+                  onChange={(e) => handleUpdateRiskSettings({ postExitCooldownMinutes: Math.max(5, parseInt(e.target.value) || 15) })}
+                  className="w-8 bg-transparent font-mono font-bold text-cyan-400 text-xs text-right focus:outline-none"
                 />
-                <span className="text-sky-400 text-xs font-bold">min</span>
+                <span className="text-cyan-400 text-xs font-bold">min</span>
               </div>
+            </div>
+
+            {/* SMC Pyramiding Scale-In */}
+            <div className="rounded-xl border border-indigo-500/20 bg-[#090c12] p-2.5 flex items-center justify-between gap-3">
+              <div>
+                <span className="text-xs font-bold text-indigo-300 block">SMC Scale-In:</span>
+                <span className="text-[10px] text-slate-400">
+                  Pyramid 2nd trade once BE locked
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleUpdateRiskSettings({ allowScaleIn: riskSettings.allowScaleIn === false ? true : false })}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all ${
+                  riskSettings.allowScaleIn !== false
+                    ? 'bg-indigo-500 text-white shadow-[0_0_8px_rgba(99,102,241,0.4)]'
+                    : 'bg-[#151922] text-slate-400 hover:text-white border border-[#283244]'
+                }`}
+              >
+                {riskSettings.allowScaleIn !== false ? 'ACTIVE (0.5x)' : 'OFF'}
+              </button>
             </div>
           </div>
 

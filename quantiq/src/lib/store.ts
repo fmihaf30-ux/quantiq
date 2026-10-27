@@ -16,6 +16,9 @@ export interface GlobalRiskSettings {
   partialProfitClose?: boolean; // default true: take 50% partial off at +1.5R, lock 50% to trail
   maxSpreadPoints?: number; // max allowable spread points
   tradeCooldownMinutes?: number; // default 5 minutes
+  postExitCooldownMinutes?: number; // default 15 minutes: lockout after trade exits at BE/SL
+  allowScaleIn?: boolean; // default true: allows institutional SMC pyramiding into winners with BE locked
+  scaleInRiskMultiplier?: number; // default 0.5: 50% risk for scale-in positions
   dailyGrowthTargetPct: number; // e.g. 5.0%
   dailyLossLimitPct: number;    // e.g. 3.0%
 }
@@ -44,6 +47,9 @@ class DataService {
       partialProfitClose: true, // Take 50% profit off at +1.5R and let 50% trail
       maxSpreadPoints: 45, // Protect against wide spreads
       tradeCooldownMinutes: 5, // 5-minute cooldown between entries on same asset
+      postExitCooldownMinutes: 15, // 15-minute protection lockout after trade exits at BE/SL
+      allowScaleIn: true, // SMC pyramiding into confirmed winners with BE locked
+      scaleInRiskMultiplier: 0.5, // 50% risk on scale-in position
       dailyGrowthTargetPct: 0, // 0 = no limit / unlimited growth
       dailyLossLimitPct: 0,    // 0 = disabled by default / no daily loss limit
     };

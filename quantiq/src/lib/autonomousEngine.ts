@@ -18,6 +18,7 @@ export interface AutonomousEngineStatus {
   maxTradesAllowed: number;
   protectedTradesCount: number;
   trailingProtectedCount: number;
+  scaleInTradesCount: number;
   dailyStartBalance: number;
   currentProfitToday: number;
   growthPctToday: number;
@@ -49,6 +50,11 @@ class AutonomousAccountEngine {
   private initialRiskDistances: Map<number, number> = new Map();
   private initialRiskDollars: Map<number, number> = new Map();
   private lastTradeTimeBySymbol: Map<string, number> = new Map();
+  private lastExitTimeBySymbol: Map<string, number> = new Map();
+  private spentMitigationZones: Map<string, Array<{ price: number; timestamp: number }>> = new Map();
+  private trackedTickets: Map<number, { symbol: string; openPrice: number; type: 'buy' | 'sell'; isScaleIn: boolean }> = new Map();
+  private scaleInTickets: Set<number> = new Set();
+  private scaledSymbols: Set<string> = new Set();
   private dailyStartBalance: number = 0;
   private tradesToday: number = 0;
   private isProcessingLoop: boolean = false;
@@ -97,6 +103,7 @@ class AutonomousAccountEngine {
       maxTradesAllowed: settings.maxTrades,
       protectedTradesCount: this.protectedTickets.size,
       trailingProtectedCount: trailingCount,
+      scaleInTradesCount: this.scaleInTickets.size,
       dailyStartBalance: this.dailyStartBalance || balance,
       currentProfitToday: Number(profitToday.toFixed(2)),
       growthPctToday: Number(growthPct.toFixed(2)),
@@ -117,27 +124,31 @@ class AutonomousAccountEngine {
     this.statusText = 'Autonomous Autopilot Active — Scanning Market & Managing Positions...';
     this.lastActionTime = new Date().toLocaleTimeString();
     if (typeof window !== 'undefined') {
-      try { 
+      try {
         localStorage.setItem('quantiq_autopilot_active', 'true');
         localStorage.setItem('pipnex_autopilot_active', 'true');
       } catch {}
     }
-
-    const settings = store.getRiskSettings();
-    store.addLog({
-      botId: 'autonomous-growth-engine',
-      userId: activeAccount?.userId || 'system',
-      type: 'status_change',
-      message: `🚀 Autonomous Account Growth Engine ACTIVATED. Sizing: ${settings.mode === 'RISK_PCT' ? `${settings.riskPercent}% Risk` : `${settings.fixedLot} Lots`} • Order Mode: ${settings.orderDispatchMode || 'AUTO'} • Max Concurrent Trades: ${settings.maxTrades} • Step Trailing SL: ${settings.trailingStop ? 'ON' : 'OFF'} • Breakeven Guard: ON`,
-    });
-
-    this.intervalId = setInterval(() => this.runAutonomousLoop(), 8000);
     this.notify();
+
+    // Run immediate check
     this.runAutonomousLoop();
+
+    // Pulse heartbeat every 8 seconds
+    this.intervalId = setInterval(() => {
+      this.runAutonomousLoop();
+    }, 8000);
+  }
+
+  public toggle() {
+    if (this.isRunning) {
+      this.stop();
+    } else {
+      this.start();
+    }
   }
 
   public stop() {
-    if (!this.isRunning) return;
     this.isRunning = false;
     if (this.intervalId) {
       clearInterval(this.intervalId);
@@ -146,26 +157,44 @@ class AutonomousAccountEngine {
     this.statusText = 'Autonomous Autopilot Paused';
     this.lastActionTime = new Date().toLocaleTimeString();
     if (typeof window !== 'undefined') {
-      try { 
+      try {
         localStorage.setItem('quantiq_autopilot_active', 'false');
         localStorage.setItem('pipnex_autopilot_active', 'false');
       } catch {}
     }
-
-    const activeAccount = store.getActiveAccount();
-    store.addLog({
-      botId: 'autonomous-growth-engine',
-      userId: activeAccount?.userId || 'system',
-      type: 'status_change',
-      message: '⏸️ Autonomous Account Growth Engine PAUSED by user.',
-    });
-
     this.notify();
   }
 
-  public toggle() {
-    if (this.isRunning) this.stop();
-    else this.start();
+  public resetDailyStats() {
+    const activeAccount = store.getActiveAccount();
+    this.dailyStartBalance = activeAccount?.balance || 0;
+    this.tradesToday = 0;
+    this.protectedTickets.clear();
+    this.trailingStages.clear();
+    this.partialClosedTickets.clear();
+    this.initialRiskDistances.clear();
+    this.initialRiskDollars.clear();
+    this.lastTradeTimeBySymbol.clear();
+    this.lastExitTimeBySymbol.clear();
+    this.spentMitigationZones.clear();
+    this.trackedTickets.clear();
+    this.scaleInTickets.clear();
+    this.scaledSymbols.clear();
+    this.latestSMCSetup = null;
+    this.lastActionTime = new Date().toLocaleTimeString();
+    this.notify();
+  }
+
+  public getWatchlist(): string[] {
+    return [...this.watchlist];
+  }
+
+  public setWatchlist(list: string[]) {
+    if (list.length > 0) {
+      this.watchlist = list;
+      this.activeAssetIndex = 0;
+      this.notify();
+    }
   }
 
   private async runAutonomousLoop() {
@@ -192,20 +221,76 @@ class AutonomousAccountEngine {
       const currentPositions = Array.isArray(livePositions) ? livePositions : [];
       store.syncLivePositions(currentPositions);
 
-      // 2. SMART BREAKEVEN GUARD, STEP TRAILING SL & PARTIAL PROFIT TAKING
-      if (currentPositions.length > 0) {
-        // Clean up closed tickets from internal maps
-        const activeTickets = new Set(currentPositions.map((p) => p.ticket));
-        for (const t of Array.from(this.initialRiskDistances.keys())) {
-          if (!activeTickets.has(t)) {
-            this.initialRiskDistances.delete(t);
-            this.initialRiskDollars.delete(t);
-            this.trailingStages.delete(t);
-            this.partialClosedTickets.delete(t);
-            this.protectedTickets.delete(t);
-          }
-        }
+      const activeTickets = new Set(currentPositions.map((p) => p.ticket));
 
+      // 2. DETECT CLOSED TRADES -> ACTIVATE POST-EXIT COOLDOWN & MARK ZONES EXHAUSTED
+      for (const [ticket, meta] of Array.from(this.trackedTickets.entries())) {
+        if (!activeTickets.has(ticket)) {
+          const cleanSymbol = meta.symbol.toUpperCase().replace(/M$/, '');
+          const wasProtected = this.protectedTickets.has(ticket);
+          const stage = this.trailingStages.get(ticket) || 0;
+
+          // A) Stamp post-exit protection cooldown timestamp
+          this.lastExitTimeBySymbol.set(cleanSymbol, Date.now());
+
+          // B) Register the entry price as an exhausted mitigation zone
+          if (!this.spentMitigationZones.has(cleanSymbol)) {
+            this.spentMitigationZones.set(cleanSymbol, []);
+          }
+          this.spentMitigationZones.get(cleanSymbol)!.push({
+            price: meta.openPrice,
+            timestamp: Date.now(),
+          });
+
+          // C) Clear scale-in tracking if all positions on this symbol have exited
+          const hasRemainingOnSymbol = currentPositions.some(
+            (p) => p.symbol.toUpperCase().replace(/M$/, '') === cleanSymbol
+          );
+          if (!hasRemainingOnSymbol) {
+            this.scaledSymbols.delete(cleanSymbol);
+          }
+
+          // D) Determine exit classification and log protection event
+          const exitReason = stage >= 2
+            ? 'PARTIAL PROFIT / TRAILING SL'
+            : (wasProtected || stage === 1 ? 'BREAKEVEN GUARD ($0 RISK)' : 'STOP LOSS / EXIT');
+
+          const postExitMins = settings.postExitCooldownMinutes ?? 15;
+          await store.addLog({
+            botId: 'autonomous-growth-engine',
+            userId: activeAccount.userId,
+            type: 'trade',
+            message: `🛡️ POST-EXIT PROTECTION ACTIVATED: Position #${ticket} (${cleanSymbol}) exited via ${exitReason}. Mitigation zone near $${formatSymbolPrice(cleanSymbol, meta.openPrice)} marked EXHAUSTED. Lockout active for ${postExitMins}m to prevent premature re-entry.`,
+          });
+
+          // E) Clean up internal ticket state
+          this.trackedTickets.delete(ticket);
+          this.initialRiskDistances.delete(ticket);
+          this.initialRiskDollars.delete(ticket);
+          this.trailingStages.delete(ticket);
+          this.partialClosedTickets.delete(ticket);
+          this.protectedTickets.delete(ticket);
+          this.scaleInTickets.delete(ticket);
+        }
+      }
+
+      // Register currently active positions in trackedTickets map
+      for (const pos of currentPositions) {
+        const isBuy = pos.type === 'BUY' || String(pos.type).toLowerCase() === 'buy';
+        const openPrice = pos.priceOpen || (pos as any).openPrice || 0;
+        const cleanSymbol = pos.symbol.toUpperCase().replace(/M$/, '');
+        if (!this.trackedTickets.has(pos.ticket)) {
+          this.trackedTickets.set(pos.ticket, {
+            symbol: cleanSymbol,
+            openPrice,
+            type: isBuy ? 'buy' : 'sell',
+            isScaleIn: this.scaleInTickets.has(pos.ticket),
+          });
+        }
+      }
+
+      // 3. SMART BREAKEVEN GUARD, STEP TRAILING SL & PARTIAL PROFIT TAKING
+      if (currentPositions.length > 0) {
         for (const pos of currentPositions) {
           const isBuy = pos.type === 'BUY' || String(pos.type).toLowerCase() === 'buy';
           const openPrice = pos.priceOpen || (pos as any).openPrice;
@@ -215,7 +300,6 @@ class AutonomousAccountEngine {
           const decimals = pos.symbol.includes('USD') && !pos.symbol.includes('XAU') && !pos.symbol.includes('BTC') && !pos.symbol.includes('US30') ? 4 : 2;
           const spreadBuffer = decimals === 4 ? 0.0003 : (pos.symbol.includes('BTC') ? 2.0 : 0.40);
 
-          // Point value conversion for exact dollar risk tracking
           let pointVal = 100;
           if (pos.symbol.includes('EUR') || pos.symbol.includes('GBP') || pos.symbol.includes('USDJPY')) {
             pointVal = 100000;
@@ -226,13 +310,12 @@ class AutonomousAccountEngine {
           const rawSl = pos.sl || (pos as any).stopLoss || 0;
           const rawTp = pos.tp || (pos as any).takeProfit || 0;
 
-          // Record initial risk baseline on first discovery before SL is modified!
+          // Record initial risk baseline on first discovery before SL is modified
           if (!this.initialRiskDistances.has(pos.ticket)) {
             const calculatedDist = rawSl > 0 
               ? Math.abs(openPrice - rawSl) 
               : Math.max(decimals === 4 ? 0.0018 : 4.5, openPrice * 0.0025);
 
-            // Only lock if the SL is well away from openPrice (i.e. not already at BE)
             if (calculatedDist > spreadBuffer * 2.5) {
               this.initialRiskDistances.set(pos.ticket, calculatedDist);
               this.initialRiskDollars.set(pos.ticket, pos.volume * pointVal * calculatedDist);
@@ -244,9 +327,6 @@ class AutonomousAccountEngine {
           const initialRiskCash = this.initialRiskDollars.get(pos.ticket) 
             || (pos.volume * pointVal * slDist);
 
-          // Exact R Multiple Calculation:
-          // If profit in cash is provided by the broker and positive, calculate via dollar ratio
-          // Otherwise calculate via price displacement ratio
           const priceGain = isBuy ? (curPrice - openPrice) : (openPrice - curPrice);
           let currentR = 0;
           if (initialRiskCash > 0 && profit > 0) {
@@ -261,9 +341,6 @@ class AutonomousAccountEngine {
           let stageReason = '';
 
           // Step 1: Breakeven (+1.0R / 1:1 Profit Milestone)
-          // Default trigger is 1.0R (or user-chosen breakevenTriggerR).
-          // Strictly requires currentR >= breakevenThresholdR.
-          // NEVER triggers on early micro-movements (like $26 profit on $55 risk) so trade has full room to breathe!
           const breakevenThresholdR = settings.breakevenTriggerR || 1.0;
           const beLevel = Number((isBuy ? openPrice + spreadBuffer : openPrice - spreadBuffer).toFixed(decimals));
           const slAtOrPastBE = isBuy ? (rawSl >= openPrice) : (rawSl > 0 && rawSl <= openPrice);
@@ -358,7 +435,7 @@ class AutonomousAccountEngine {
         }
       }
 
-      // 3. TARGET DAILY GROWTH & LOSS LIMIT PROTECTION
+      // 4. TARGET DAILY GROWTH & LOSS LIMIT PROTECTION
       const currentProfit = activeAccount.equity - this.dailyStartBalance;
       const currentGrowthPct = (currentProfit / this.dailyStartBalance) * 100;
 
@@ -376,29 +453,49 @@ class AutonomousAccountEngine {
         return;
       }
 
-      // 4. AUTONOMOUS TRADE DISPATCH IF BELOW MAX CONCURRENT TRADES
+      // 5. AUTONOMOUS TRADE DISPATCH (INITIAL ENTRY OR SMC SCALE-IN PYRAMID)
       if (currentPositions.length < settings.maxTrades) {
-        // Rotate watchlist
         this.activeAssetIndex = (this.activeAssetIndex + 1) % this.watchlist.length;
         const targetSymbol = this.watchlist[this.activeAssetIndex];
 
-        // Check if we already have an open trade on this symbol
-        const hasOpenOnSymbol = currentPositions.some((p) => p.symbol.toUpperCase().replace(/M$/, '') === targetSymbol);
+        const symbolPositions = currentPositions.filter(
+          (p) => p.symbol.toUpperCase().replace(/M$/, '') === targetSymbol
+        );
 
-        if (!hasOpenOnSymbol) {
-          // A) Check Post-Trade Cooldown for this symbol (prevent overtrading churn)
-          const cooldownMinutes = settings.tradeCooldownMinutes || 5;
-          const cooldownMs = cooldownMinutes * 60 * 1000;
-          const lastTime = this.lastTradeTimeBySymbol.get(targetSymbol) || 0;
-          if (Date.now() - lastTime < cooldownMs) {
-            const remMins = Math.ceil((cooldownMs - (Date.now() - lastTime)) / 60000);
-            this.statusText = `${targetSymbol} in post-trade cooldown (${remMins}m remaining). Awaiting fresh market cycle...`;
+        const isInitialEntry = symbolPositions.length === 0;
+        const canAttemptScaleIn =
+          !isInitialEntry &&
+          settings.allowScaleIn !== false &&
+          symbolPositions.length === 1 &&
+          !this.scaledSymbols.has(targetSymbol);
+
+        // =========================================================================
+        // BRANCH A: INITIAL POSITION 1 ENTRY (WITH POST-EXIT COOLDOWN & ZONE CHECK)
+        // =========================================================================
+        if (isInitialEntry) {
+          // A1) Post-Exit Cooldown Guard (e.g. 15 minutes lockout after BE or SL exit)
+          const postExitCooldownMs = (settings.postExitCooldownMinutes ?? 15) * 60 * 1000;
+          const lastExit = this.lastExitTimeBySymbol.get(targetSymbol) || 0;
+          if (Date.now() - lastExit < postExitCooldownMs) {
+            const remMins = Math.ceil((postExitCooldownMs - (Date.now() - lastExit)) / 60000);
+            this.statusText = `${targetSymbol} in post-exit protection cooldown (${remMins}m remaining). Awaiting fresh market cycle...`;
             this.notify();
             this.isProcessingLoop = false;
             return;
           }
 
-          // B) Fetch Live Market Price and Check Spread Safety
+          // A2) General Trade Pacing Cooldown (e.g. 5 minutes)
+          const tradeCooldownMs = (settings.tradeCooldownMinutes || 5) * 60 * 1000;
+          const lastTrade = this.lastTradeTimeBySymbol.get(targetSymbol) || 0;
+          if (Date.now() - lastTrade < tradeCooldownMs) {
+            const remMins = Math.ceil((tradeCooldownMs - (Date.now() - lastTrade)) / 60000);
+            this.statusText = `${targetSymbol} in trade pacing cooldown (${remMins}m remaining)...`;
+            this.notify();
+            this.isProcessingLoop = false;
+            return;
+          }
+
+          // A3) Spread Safety Check
           const quote = await fetchLiveMarketPrice(targetSymbol);
           const livePrice = quote.price;
           const decimals = targetSymbol.includes('USD') && !targetSymbol.includes('XAU') && !targetSymbol.includes('BTC') ? 4 : 2;
@@ -412,19 +509,24 @@ class AutonomousAccountEngine {
             return;
           }
 
+          // A4) Filter spent/exhausted mitigation zones (within last 45 minutes)
+          const recentSpentZones = (this.spentMitigationZones.get(targetSymbol) || [])
+            .filter((z) => Date.now() - z.timestamp < 45 * 60 * 1000)
+            .map((z) => z.price);
+
           this.statusText = `Scanning institutional SMC structure for ${targetSymbol} M15...`;
           this.notify();
 
-          // C) Deep SMC Scan: Detect Order Block Mitigation & Fair Value Gaps
+          // A5) Deep SMC Scan: Detect Order Block Mitigation & Fair Value Gaps
           const analysis = await analyzeChartImageOrCandles({
             symbol: targetSymbol,
             timeframe: 'M15',
             userQuery: `Autonomous high-probability SMC setup scan for ${targetSymbol}. Check Fair Value Gap & Order block mitigation.`,
+            exhaustedPriceZones: recentSpentZones,
           });
 
-          // D) Quality & Confidence Gating: Don't force trades on neutral or low-confidence structures
           if (analysis.bias === 'neutral' || analysis.confidence === 'low' || !analysis.setups || analysis.setups.length === 0) {
-            this.statusText = `Watching ${targetSymbol} M15 — No valid Order Block mitigation yet. Awaiting liquidity sweep...`;
+            this.statusText = `Watching ${targetSymbol} M15 — No valid unmitigated Order Block. Awaiting liquidity sweep...`;
             this.notify();
             this.isProcessingLoop = false;
             return;
@@ -435,9 +537,16 @@ class AutonomousAccountEngine {
           if (validSetups && validSetups.length > 0) {
             const setup = validSetups[0];
 
-            // E) SMART ORDER MODE SELECTION (LIMIT vs MARKET)
-            // If price has expanded away from the Order Block, place a pending LIMIT order.
-            // If price is actively inside/tapping the Order Block now, execute a MARKET order.
+            // A6) Invalidate if setup price matches any spent zone within 0.15%
+            const isSpent = recentSpentZones.some((zp) => Math.abs(setup.entry - zp) / zp <= 0.0015);
+            if (isSpent) {
+              this.statusText = `Watching ${targetSymbol} — Setup @ ${setup.entry} is within an exhausted Order Block. Awaiting new structure...`;
+              this.notify();
+              this.isProcessingLoop = false;
+              return;
+            }
+
+            // A7) Order Mode Selection (LIMIT vs MARKET)
             const orderModePref = settings.orderDispatchMode || 'AUTO';
             let chosenOrderType: 'MARKET' | 'LIMIT' = 'MARKET';
             let execPrice = livePrice;
@@ -445,7 +554,6 @@ class AutonomousAccountEngine {
 
             const targetEntry = setup.entry || livePrice;
             const priceDistancePct = Math.abs(livePrice - targetEntry) / livePrice;
-            // Within 0.08% distance means price is actively inside the mitigation zone (~$2.20 on Gold)
             const isTappingOrderBlock = priceDistancePct <= 0.0008;
 
             if (orderModePref === 'LIMIT') {
@@ -457,7 +565,6 @@ class AutonomousAccountEngine {
               execPrice = livePrice;
               orderRationale = `User Forced Market Entry @ Current Spot ($${formatSymbolPrice(targetSymbol, execPrice)})`;
             } else {
-              // AUTO (AI SMC SMART ROUTING):
               if (isTappingOrderBlock) {
                 chosenOrderType = 'MARKET';
                 execPrice = livePrice;
@@ -465,11 +572,11 @@ class AutonomousAccountEngine {
               } else {
                 chosenOrderType = 'LIMIT';
                 execPrice = targetEntry;
-                orderRationale = `SMC Retracement: Price is ${(priceDistancePct * 100).toFixed(2)}% away from Order Block ($${formatSymbolPrice(targetSymbol, execPrice)}) — Placed Pending Limit to avoid chasing`;
+                orderRationale = `SMC Retracement: Price is ${(priceDistancePct * 100).toFixed(2)}% away from Order Block ($${formatSymbolPrice(targetSymbol, execPrice)}) — Placed Pending Limit`;
               }
             }
 
-            // F) Protective SL and Strict 1:2.2+ R:R Take Profit
+            // A8) Protective SL and Strict 1:2.2+ R:R Take Profit
             const minSlDist = Math.max(decimals === 4 ? 0.0015 : 4.0, execPrice * 0.0025);
             let sl = setup.stopLoss;
             let tp = setup.takeProfit;
@@ -486,9 +593,9 @@ class AutonomousAccountEngine {
               sl = Number(sl.toFixed(decimals));
             }
 
-            // G) Dynamic Lot Sizing & Free Margin Safety Cap
+            // A9) Dynamic Lot Sizing & Free Margin Safety Cap
             let pointValue = 100;
-            let contractSize = 100; // Gold
+            let contractSize = 100;
             if (targetSymbol.includes('EUR') || targetSymbol.includes('GBP') || targetSymbol.includes('USDJPY')) {
               pointValue = 100000;
               contractSize = 100000;
@@ -506,7 +613,6 @@ class AutonomousAccountEngine {
               effectiveLot = Math.max(0.01, Math.min(10.0, parseFloat(calculated.toFixed(2))));
             }
 
-            // Margin Safety Guard (never risk margin calls on small accounts)
             const freeMargin = activeAccount.freeMargin || activeAccount.balance || 80;
             const leverage = activeAccount.leverage || 200;
             const marginPerLot = (contractSize * livePrice) / leverage;
@@ -515,7 +621,6 @@ class AutonomousAccountEngine {
               effectiveLot = maxSafeLots;
             }
 
-            // H) Save full setup to state for 100% user visibility
             this.latestSMCSetup = {
               symbol: targetSymbol,
               bias: analysis.bias,
@@ -533,7 +638,6 @@ class AutonomousAccountEngine {
             this.statusText = `Placing Autonomous ${chosenOrderType} ${setup.direction.toUpperCase()} (${effectiveLot} Lots) on ${targetSymbol}...`;
             this.notify();
 
-            // I) Execute order on MT5 (Market or Pending Limit)
             let ticket = Math.floor(1000000 + Math.random() * 9000000);
             try {
               const execRes = await executeMetaApiTrade({
@@ -552,7 +656,6 @@ class AutonomousAccountEngine {
               console.warn('Autonomous dispatch notice:', tradeErr.message);
             }
 
-            // J) Add position to store if Market order
             if (chosenOrderType === 'MARKET') {
               await store.addPosition({
                 mt5AccountId: activeAccount.id,
@@ -580,6 +683,167 @@ class AutonomousAccountEngine {
               message: `⚡ SMC AUTOPILOT: Placed ${chosenOrderType} ${setup.direction.toUpperCase()} (${effectiveLot} lots) on ${targetSymbol} @ ${formatSymbolPrice(targetSymbol, execPrice)} | SL: ${formatSymbolPrice(targetSymbol, sl)}, TP: ${formatSymbolPrice(targetSymbol, tp)} | Mode: ${orderRationale}`,
             });
           }
+        }
+        // =========================================================================
+        // BRANCH B: INSTITUTIONAL SMC SCALE-IN (PYRAMIDING INTO CONFIRMED WINNERS)
+        // =========================================================================
+        else if (canAttemptScaleIn) {
+          const primaryPos = symbolPositions[0];
+          const isBuy = primaryPos.type === 'BUY' || String(primaryPos.type).toLowerCase() === 'buy';
+          const primaryOpen = primaryPos.priceOpen || (primaryPos as any).openPrice || 0;
+          const primarySl = primaryPos.sl || (primaryPos as any).stopLoss || 0;
+          const primaryProfit = primaryPos.profit || 0;
+
+          // B1) Primary trade MUST be 100% risk-free at or past Breakeven
+          const slAtOrPastBE = isBuy ? (primarySl >= primaryOpen) : (primarySl > 0 && primarySl <= primaryOpen);
+          const isStageProtected = this.protectedTickets.has(primaryPos.ticket);
+
+          if (!slAtOrPastBE && !isStageProtected) {
+            this.statusText = `${targetSymbol} trade active (+$${primaryProfit.toFixed(2)}). Scale-in locked until SL moved to Breakeven...`;
+            this.notify();
+            this.isProcessingLoop = false;
+            return;
+          }
+
+          // B2) Fetch live market price
+          const quote = await fetchLiveMarketPrice(targetSymbol);
+          const livePrice = quote.price;
+          const decimals = targetSymbol.includes('USD') && !targetSymbol.includes('XAU') && !targetSymbol.includes('BTC') ? 4 : 2;
+
+          // B3) Price MUST be expanding in profit direction (NO scaling into pullbacks to entry)
+          const isExpanding = isBuy ? livePrice > primaryOpen : livePrice < primaryOpen;
+          if (!isExpanding) {
+            this.statusText = `${targetSymbol} hovering near entry ($${formatSymbolPrice(targetSymbol, livePrice)}). Scale-in prohibited on pullback to entry.`;
+            this.notify();
+            this.isProcessingLoop = false;
+            return;
+          }
+
+          // B4) Check current R multiple of primary trade (requires at least +1.2R)
+          const slDist = this.initialRiskDistances.get(primaryPos.ticket) || Math.abs(primaryOpen - primarySl);
+          const currentR = slDist > 0 ? Math.abs(livePrice - primaryOpen) / slDist : 1.5;
+
+          if (currentR < 1.2) {
+            this.statusText = `${targetSymbol} primary trade at +${currentR.toFixed(1)}R. Awaiting +1.5R expansion for scale-in qualification...`;
+            this.notify();
+            this.isProcessingLoop = false;
+            return;
+          }
+
+          // B5) Scan for continuation BOS on intermediate timeframe
+          this.statusText = `⚡ Scanning SMC continuation BOS for Scale-In on ${targetSymbol}...`;
+          this.notify();
+
+          const analysis = await analyzeChartImageOrCandles({
+            symbol: targetSymbol,
+            timeframe: 'M5',
+            userQuery: `SMC Pyramiding Scale-In: Look for a continuation Break of Structure (BOS) and fresh Fair Value Gap on M5/M15 in ${isBuy ? 'BULLISH' : 'BEARISH'} direction.`,
+            scaleInContext: {
+              primaryTicket: primaryPos.ticket,
+              primaryDirection: isBuy ? 'buy' : 'sell',
+              primaryEntryPrice: primaryOpen,
+              currentR,
+            },
+          });
+
+          const validSetups = sanitizeAndValidateSetups(analysis.setups || [], livePrice, decimals, isBuy ? 'bullish' : 'bearish');
+          if (!validSetups || validSetups.length === 0) {
+            this.statusText = `Watching ${targetSymbol} — No confirmed continuation BOS yet for scale-in...`;
+            this.notify();
+            this.isProcessingLoop = false;
+            return;
+          }
+
+          const scaleSetup = validSetups[0];
+
+          // B6) Strict continuation validation (direction must match, entry must be progressive)
+          if (scaleSetup.direction !== (isBuy ? 'buy' : 'sell')) {
+            this.isProcessingLoop = false;
+            return;
+          }
+
+          if (isBuy && scaleSetup.entry < primaryOpen) {
+            this.isProcessingLoop = false;
+            return;
+          }
+          if (!isBuy && scaleSetup.entry > primaryOpen) {
+            this.isProcessingLoop = false;
+            return;
+          }
+
+          // B7) Scale-In Lot Sizing: 50% risk multiplier (financed completely by locked profit)
+          const riskMultiplier = settings.scaleInRiskMultiplier || 0.5;
+          let pointValue = 100;
+          let contractSize = 100;
+          if (targetSymbol.includes('EUR') || targetSymbol.includes('GBP') || targetSymbol.includes('USDJPY')) {
+            pointValue = 100000;
+            contractSize = 100000;
+          } else if (targetSymbol.includes('BTC') || targetSymbol.includes('US30')) {
+            pointValue = 1;
+            contractSize = 1;
+          }
+
+          const scaleSlDist = Math.abs(livePrice - scaleSetup.stopLoss);
+          let scaleLot = Math.max(0.01, parseFloat((settings.fixedLot * riskMultiplier).toFixed(2)));
+          if (settings.mode === 'RISK_PCT' && scaleSlDist > 0) {
+            const scaleRiskCash = activeAccount.balance * ((settings.riskPercent * riskMultiplier) / 100);
+            const calculated = scaleRiskCash / (scaleSlDist * pointValue);
+            scaleLot = Math.max(0.01, Math.min(5.0, parseFloat(calculated.toFixed(2))));
+          }
+
+          // Margin Safety Guard
+          const freeMargin = activeAccount.freeMargin || activeAccount.balance || 80;
+          const leverage = activeAccount.leverage || 200;
+          const marginPerLot = (contractSize * livePrice) / leverage;
+          const maxSafeLots = Math.max(0.01, parseFloat(((freeMargin * 0.28) / marginPerLot).toFixed(2)));
+          if (scaleLot > maxSafeLots) scaleLot = maxSafeLots;
+
+          this.statusText = `Placing Autonomous SMC Scale-In (${scaleLot} Lots) on ${targetSymbol}...`;
+          this.notify();
+
+          let scaleTicket = Math.floor(1000000 + Math.random() * 9000000);
+          try {
+            const execRes = await executeMetaApiTrade({
+              metaapiAccountId: activeAccount.metaapiAccountId,
+              symbol: targetSymbol,
+              actionType: isBuy ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL',
+              orderType: 'MARKET',
+              price: livePrice,
+              volume: scaleLot,
+              stopLoss: scaleSetup.stopLoss,
+              takeProfit: scaleSetup.takeProfit,
+              comment: `Quantiq Pyramiding Scale-In`,
+            });
+            if (execRes?.orderId) scaleTicket = Number(execRes.orderId);
+          } catch (tErr: any) {
+            console.warn('Scale-in execution notice:', tErr.message);
+          }
+
+          this.scaleInTickets.add(scaleTicket);
+          this.scaledSymbols.add(targetSymbol);
+          this.tradesToday++;
+          this.lastActionTime = new Date().toLocaleTimeString();
+
+          await store.addPosition({
+            mt5AccountId: activeAccount.id,
+            ticket: scaleTicket,
+            symbol: targetSymbol,
+            type: scaleSetup.direction,
+            volume: scaleLot,
+            openPrice: livePrice,
+            currentPrice: livePrice,
+            stopLoss: scaleSetup.stopLoss,
+            takeProfit: scaleSetup.takeProfit,
+            profit: 0,
+            openTime: new Date().toISOString(),
+          });
+
+          await store.addLog({
+            botId: 'autonomous-growth-engine',
+            userId: activeAccount.userId,
+            type: 'trade',
+            message: `🚀 SMC PYRAMIDING SCALE-IN: Placed continuation ${scaleSetup.direction.toUpperCase()} (${scaleLot} lots, ${riskMultiplier * 100}% size) on ${targetSymbol} @ ${formatSymbolPrice(targetSymbol, livePrice)} | Primary Trade #${primaryPos.ticket} locked risk-free at BE! | SL: ${formatSymbolPrice(targetSymbol, scaleSetup.stopLoss)}, TP: ${formatSymbolPrice(targetSymbol, scaleSetup.takeProfit)}`,
+          });
         }
       } else {
         this.statusText = `Max concurrent trades reached (${currentPositions.length}/${settings.maxTrades}). Managing open positions and monitoring breakeven...`;
