@@ -714,7 +714,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
           lineWidth: 1,
           lineStyle: showPriceLines ? LineStyle.Dashed : LineStyle.Dotted,
           axisLabelVisible: true,
-          title: 'TARGET',
+          title: '', // Pure clean badge with price only (Matching TradingView)
         });
         priceLinesRef.current.push(tpLine);
       }
@@ -727,7 +727,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
           lineWidth: 1,
           lineStyle: showPriceLines ? LineStyle.Solid : LineStyle.Dashed,
           axisLabelVisible: true,
-          title: boxCoords.isLimit ? 'LIMIT' : 'ENTRY',
+          title: '', // Pure clean badge with price only
         });
         priceLinesRef.current.push(entryLine);
       }
@@ -740,7 +740,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
           lineWidth: 1,
           lineStyle: showPriceLines ? LineStyle.Dashed : LineStyle.Dotted,
           axisLabelVisible: true,
-          title: 'STOP',
+          title: '', // Pure clean badge with price only
         });
         priceLinesRef.current.push(slLine);
       }
@@ -753,13 +753,13 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
           lineWidth: 1,
           lineStyle: LineStyle.Dotted,
           axisLabelVisible: true,
-          title: 'BE / TRAIL',
+          title: '',
         });
         priceLinesRef.current.push(trailLine);
       }
     }
 
-    // 5) Demand / Order Block Zone Price Scale Badges (Matching Screenshot 2 cyan level 4004.01)
+    // 5) Demand / Order Block Zone Price Scale Badges (Matching Screenshot 2 cyan level)
     if (obZoneCoords.visible && showZones) {
       const obLowLine = series.createPriceLine({
         price: obZoneCoords.lowPrice,
@@ -767,7 +767,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
-        title: 'SWEEP',
+        title: '',
       });
       priceLinesRef.current.push(obLowLine);
 
@@ -778,7 +778,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
           lineWidth: 1,
           lineStyle: LineStyle.Dotted,
           axisLabelVisible: true,
-          title: 'BOS',
+          title: '',
         });
         priceLinesRef.current.push(bosLine);
       }
@@ -988,10 +988,10 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
           {symbol}, {timeframe}
         </div>
 
-        {/* 1. ORDER BLOCK / FVG DEMAND ZONE BOX (MATCHING SCREENSHOT 2 BOTTOM RECTANGLE) */}
+        {/* 1. ORDER BLOCK / DEMAND ZONE BOX (MATCHING SCREENSHOT 2) */}
         {obZoneCoords.visible && showZones && (
           <div
-            className="absolute pointer-events-none font-mono transition-all duration-75 z-10"
+            className="absolute pointer-events-none transition-all duration-75 z-10"
             style={{
               left: `${obZoneCoords.startX}px`,
               top: `${obZoneCoords.topY}px`,
@@ -999,54 +999,23 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
               height: `${obZoneHeight}px`,
             }}
           >
-            {/* Shaded Rectangle Zone */}
-            <div className="relative w-full h-full border border-cyan-400/60 bg-cyan-500/10 rounded-sm shadow-[0_0_12px_rgba(6,182,212,0.15)] flex flex-col justify-between p-1.5 overflow-hidden">
-              {/* Top Label */}
-              <div className="flex items-center justify-between z-10">
-                <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold border ${
-                  theme === 'light' 
-                    ? 'bg-white/95 text-cyan-800 border-cyan-300' 
-                    : 'bg-[#07090e]/90 text-cyan-300 border-cyan-500/40'
-                }`}>
-                  {obZoneCoords.label} ({formatSymbolPrice(symbol, obZoneCoords.lowPrice)} - {formatSymbolPrice(symbol, obZoneCoords.highPrice)})
-                </span>
-                <span className="text-[8px] font-bold text-cyan-400/80 px-1 py-0.5 rounded bg-cyan-950/60">
-                  50% EQ: {formatSymbolPrice(symbol, obZoneCoords.midPrice)}
-                </span>
-              </div>
-
+            {/* Shaded Clean Rectangle Zone */}
+            <div className="relative w-full h-full border border-cyan-400/50 bg-cyan-500/10 rounded-sm">
               {/* Dashed Midline at 50% Mean Threshold (Matching Screenshot 2) */}
               <div
-                className="absolute left-0 w-full border-t border-dashed border-cyan-400/70"
+                className="absolute left-0 w-full border-t border-dashed border-cyan-400/60"
                 style={{
                   top: `${Math.max(2, obZoneCoords.midY - obZoneCoords.topY)}px`,
                 }}
               />
-
-              {/* Bottom Subtitle */}
-              <span className="text-[8px] font-bold self-end text-cyan-300/70 z-10">
-                INSTITUTIONAL LIQUIDITY SWEEP & MITIGATION
-              </span>
             </div>
           </div>
         )}
 
-        {/* BOS Reference Line (Matching Screenshot 2 Level 4025.302) */}
-        {obZoneCoords.visible && showZones && obZoneCoords.bosPrice && obZoneCoords.bosY !== null && (
-          <div
-            className="absolute left-0 w-full border-t border-dashed border-sky-400/80 pointer-events-none flex items-center justify-end pr-20 z-10"
-            style={{ top: `${obZoneCoords.bosY}px` }}
-          >
-            <span className="text-[9px] font-extrabold text-sky-300 bg-[#07090e]/90 border border-sky-400/50 px-2 py-0.5 rounded -translate-y-1/2 shadow">
-              BOS: {formatSymbolPrice(symbol, obZoneCoords.bosPrice)}
-            </span>
-          </div>
-        )}
-
-        {/* 2. TRADINGVIEW-STYLE LONG / SHORT POSITION BOX OVERLAY (MATCHING SCREENSHOT 2) */}
+        {/* 2. TRADINGVIEW-STYLE LONG / SHORT POSITION BOX (MATCHING SCREENSHOT 2) */}
         {boxCoords.visible && (
           <div
-            className="absolute pointer-events-none transition-all duration-75 font-mono z-20"
+            className="absolute pointer-events-none transition-all duration-75 z-20"
             style={{
               left: `${boxCoords.startX}px`,
               top: `${Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
@@ -1054,206 +1023,81 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
               height: `${Math.max(boxCoords.entryY, boxCoords.tpY, boxCoords.slY) - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
             }}
           >
-            {/* Case 1: LONG POSITION (Blue Take Profit on Top, Soft Gray Stop Loss on Bottom) */}
+            {/* Case 1: LONG POSITION (Clean Sky Blue Profit on Top, Clean Neutral Gray Risk on Bottom) */}
             {boxCoords.isLong ? (
               <>
-                {/* Take Profit Rectangle (Sky Blue Zone in TradingView) */}
+                {/* Take Profit Rectangle (Clean Sky Blue in TradingView) */}
                 <div
-                  className="absolute left-0 w-full border border-sky-400/80 bg-sky-500/20 rounded-t-sm flex flex-col justify-between p-2 shadow-[0_0_15px_rgba(56,189,248,0.15)] overflow-hidden"
+                  className="absolute left-0 w-full border border-sky-400/70 bg-sky-500/20 rounded-t-sm"
                   style={{
                     top: `${boxCoords.tpY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                     height: `${tpHeight}px`,
                   }}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
-                      theme === 'light'
-                        ? 'bg-white/95 text-sky-700 border-sky-300 shadow-sm'
-                        : 'bg-[#07090e]/90 text-sky-300 border-sky-400/40 shadow'
-                    }`}>
-                      TARGET: +{boxCoords.rrRatio}R ({formatSymbolPrice(symbol, boxCoords.tpPrice)})
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                      theme === 'light' ? 'bg-white/90 text-sky-800 border border-sky-200' : 'bg-[#07090e]/75 text-sky-200'
-                    }`}>
-                      TP ZONE
-                    </span>
-                  </div>
-                  <span className={`text-[10px] font-bold self-end px-1.5 py-0.5 rounded ${
-                    theme === 'light' ? 'text-sky-700 bg-white/90 shadow-sm' : 'text-sky-300/80 bg-[#07090e]/60'
-                  }`}>
-                    Reward: +${boxCoords.rewardCash} (1:{boxCoords.rrRatio})
-                  </span>
-                </div>
+                />
 
                 {/* Entry Divider Line */}
                 <div
-                  className={`absolute left-0 w-full border-t-2 shadow-[0_0_8px_rgba(255,255,255,0.6)] flex items-center justify-between px-2 ${
-                    theme === 'light' ? 'border-slate-800' : 'border-white'
-                  }`}
+                  className="absolute left-0 w-full border-t border-slate-300 dark:border-white/80"
                   style={{
                     top: `${boxCoords.entryY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                   }}
-                >
-                  <div className={`px-2 py-0.5 rounded -translate-y-1/2 text-[10px] font-extrabold border shadow ${
-                    theme === 'light'
-                      ? 'bg-white text-slate-900 border-slate-400'
-                      : 'bg-[#07090e]/95 text-white border-slate-500'
-                  }`}>
-                    <span>ENTRY: {formatSymbolPrice(symbol, boxCoords.entryPrice)}</span>
-                  </div>
-                  <div className={`px-2 py-0.5 rounded -translate-y-1/2 text-[10px] font-extrabold border ${
-                    boxCoords.isLimit
-                      ? (theme === 'light' ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-300 border-amber-500/50')
-                      : (theme === 'light' ? 'bg-white text-emerald-700 border-emerald-300' : 'bg-[#07090e]/90 text-[#c4f042] border-slate-700')
-                  }`}>
-                    <span>{boxCoords.label}</span>
-                  </div>
-                </div>
+                />
 
-                {/* Stop Loss Rectangle (Soft Gray/Neutral in TradingView - Matching Screenshot 2) */}
+                {/* Stop Loss Rectangle (Clean Neutral Gray in TradingView) */}
                 <div
-                  className="absolute left-0 w-full border border-slate-400/60 bg-slate-400/20 rounded-b-sm flex flex-col justify-between p-2 overflow-hidden"
+                  className="absolute left-0 w-full border border-slate-400/50 bg-slate-400/20 rounded-b-sm"
                   style={{
                     top: `${boxCoords.entryY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                     height: `${slHeight}px`,
                   }}
                 >
-                  {/* Trailing Stop Locked Line inside SL Zone */}
                   {boxCoords.trailingY !== null && (
                     <div
-                      className="absolute left-0 w-full border-t-2 border-dashed border-cyan-400 flex items-center justify-between px-2"
+                      className="absolute left-0 w-full border-t border-dashed border-cyan-400"
                       style={{
                         top: `${boxCoords.trailingY - boxCoords.entryY}px`,
                       }}
-                    >
-                      <span className="bg-cyan-950/90 text-cyan-300 border border-cyan-400 px-1.5 py-0.5 rounded text-[9px] font-extrabold -translate-y-1/2 shadow">
-                        🛡️ TRAILING SL LOCKED @ {formatSymbolPrice(symbol, boxCoords.trailingPrice || 0)}
-                      </span>
-                    </div>
+                    />
                   )}
-
-                  <span className={`text-[10px] font-bold self-end px-1.5 py-0.5 rounded ${
-                    theme === 'light' ? 'text-slate-700 bg-white/90 shadow-sm' : 'text-slate-300/80 bg-[#07090e]/60'
-                  }`}>
-                    Risk: -1.00R (-${boxCoords.riskCash})
-                  </span>
-                  <div className="flex items-center justify-between">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
-                      theme === 'light'
-                        ? 'bg-white/95 text-rose-700 border-rose-300 shadow-sm'
-                        : 'bg-[#07090e]/90 text-slate-300 border-slate-400/40 shadow'
-                    }`}>
-                      STOP LOSS: -1.00R ({formatSymbolPrice(symbol, boxCoords.slPrice)})
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                      theme === 'light' ? 'bg-white/90 text-slate-700 border border-slate-200' : 'bg-[#07090e]/75 text-slate-300'
-                    }`}>
-                      SL ZONE
-                    </span>
-                  </div>
                 </div>
               </>
             ) : (
-              /* Case 2: SHORT POSITION (Soft Gray Stop Loss on Top, Blue Take Profit on Bottom) */
+              /* Case 2: SHORT POSITION (Clean Neutral Gray on Top, Clean Sky Blue on Bottom) */
               <>
-                {/* Stop Loss Rectangle (Soft Gray on Top) */}
+                {/* Stop Loss Rectangle (Clean Neutral Gray on Top) */}
                 <div
-                  className="absolute left-0 w-full border border-slate-400/60 bg-slate-400/20 rounded-t-sm flex flex-col justify-between p-2 overflow-hidden"
+                  className="absolute left-0 w-full border border-slate-400/50 bg-slate-400/20 rounded-t-sm"
                   style={{
                     top: `${boxCoords.slY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                     height: `${slHeight}px`,
                   }}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
-                      theme === 'light'
-                        ? 'bg-white/95 text-rose-700 border-rose-300 shadow-sm'
-                        : 'bg-[#07090e]/90 text-slate-300 border-slate-400/40 shadow'
-                    }`}>
-                      STOP LOSS: -1.00R ({formatSymbolPrice(symbol, boxCoords.slPrice)})
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                      theme === 'light' ? 'bg-white/90 text-slate-700 border border-slate-200' : 'bg-[#07090e]/75 text-slate-300'
-                    }`}>
-                      SL ZONE
-                    </span>
-                  </div>
-
-                  {/* Trailing Stop Locked Line inside SL Zone */}
                   {boxCoords.trailingY !== null && (
                     <div
-                      className="absolute left-0 w-full border-t-2 border-dashed border-cyan-400 flex items-center justify-between px-2"
+                      className="absolute left-0 w-full border-t border-dashed border-cyan-400"
                       style={{
                         top: `${boxCoords.trailingY - boxCoords.slY}px`,
                       }}
-                    >
-                      <span className="bg-cyan-950/90 text-cyan-300 border border-cyan-400 px-1.5 py-0.5 rounded text-[9px] font-extrabold -translate-y-1/2 shadow">
-                        🛡️ TRAILING SL LOCKED @ {formatSymbolPrice(symbol, boxCoords.trailingPrice || 0)}
-                      </span>
-                    </div>
+                    />
                   )}
-
-                  <span className={`text-[10px] font-bold self-end px-1.5 py-0.5 rounded ${
-                    theme === 'light' ? 'text-slate-700 bg-white/90 shadow-sm' : 'text-slate-300/80 bg-[#07090e]/60'
-                  }`}>
-                    Risk: -1.00R (-${boxCoords.riskCash})
-                  </span>
                 </div>
 
                 {/* Entry Divider Line */}
                 <div
-                  className={`absolute left-0 w-full border-t-2 shadow-[0_0_8px_rgba(255,255,255,0.6)] flex items-center justify-between px-2 ${
-                    theme === 'light' ? 'border-slate-800' : 'border-white'
-                  }`}
+                  className="absolute left-0 w-full border-t border-slate-300 dark:border-white/80"
                   style={{
                     top: `${boxCoords.entryY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                   }}
-                >
-                  <div className={`px-2 py-0.5 rounded -translate-y-1/2 text-[10px] font-extrabold border shadow ${
-                    theme === 'light'
-                      ? 'bg-white text-slate-900 border-slate-400'
-                      : 'bg-[#07090e]/95 text-white border-slate-500'
-                  }`}>
-                    <span>ENTRY: {formatSymbolPrice(symbol, boxCoords.entryPrice)}</span>
-                  </div>
-                  <div className={`px-2 py-0.5 rounded -translate-y-1/2 text-[10px] font-extrabold border ${
-                    boxCoords.isLimit
-                      ? (theme === 'light' ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-300 border-amber-500/50')
-                      : (theme === 'light' ? 'bg-white text-purple-700 border-purple-300' : 'bg-[#07090e]/90 text-purple-400 border-slate-700')
-                  }`}>
-                    <span>{boxCoords.label}</span>
-                  </div>
-                </div>
+                />
 
-                {/* Take Profit Rectangle (Blue on Bottom) */}
+                {/* Take Profit Rectangle (Clean Sky Blue on Bottom) */}
                 <div
-                  className="absolute left-0 w-full border border-sky-400/80 bg-sky-500/20 rounded-b-sm flex flex-col justify-between p-2 shadow-[0_0_15px_rgba(56,189,248,0.15)] overflow-hidden"
+                  className="absolute left-0 w-full border border-sky-400/70 bg-sky-500/20 rounded-b-sm"
                   style={{
                     top: `${boxCoords.entryY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                     height: `${tpHeight}px`,
                   }}
-                >
-                  <span className={`text-[10px] font-bold self-end px-1.5 py-0.5 rounded ${
-                    theme === 'light' ? 'text-sky-700 bg-white/90 shadow-sm' : 'text-sky-300/80 bg-[#07090e]/60'
-                  }`}>
-                    Reward: +${boxCoords.rewardCash} (1:{boxCoords.rrRatio})
-                  </span>
-                  <div className="flex items-center justify-between">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
-                      theme === 'light'
-                        ? 'bg-white/95 text-sky-700 border-sky-300 shadow-sm'
-                        : 'bg-[#07090e]/90 text-sky-300 border-sky-400/40 shadow'
-                    }`}>
-                      TARGET: +{boxCoords.rrRatio}R ({formatSymbolPrice(symbol, boxCoords.tpPrice)})
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                      theme === 'light' ? 'bg-white/90 text-sky-800 border border-sky-200' : 'bg-[#07090e]/75 text-sky-200'
-                    }`}>
-                      TP ZONE
-                    </span>
-                  </div>
-                </div>
+                />
               </>
             )}
           </div>
