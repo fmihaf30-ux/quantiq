@@ -1,20 +1,34 @@
 import { ruleBasedAnalysis, type Candle, type ChartAnalysis, type TradeSetup } from '@engine';
 import { supabase, isLiveMode } from './supabase';
 import { fetchLiveMarketPrice } from './livePrices';
+import { evaluateOneSetupForLife } from './smcSetupOne';
+import type { LiveCandle } from './metaapi';
 
-const SMC_SYSTEM_PROMPT = `You are Trish Assistant, an elite institutional Smart Money Concepts (SMC) quantitative analyst.
-Your job is to inspect financial chart data and price action to identify:
-1. Market Structure & Trend Bias: Bullish, Bearish, or Neutral (BOS, CHoCH, Market Structure Shift)
-2. High-Probability Order Blocks (OBs): Significant mitigation/unmitigated zones
-3. Fair Value Gaps (FVG) / Imbalances: Unfilled price inefficiencies
-4. Liquidity Sweeps: BSL (Buy-Side Liquidity) and SSL (Sell-Side Liquidity) grabs
-5. Actionable trade setups with exact Entry, Stop Loss, and Take Profit levels (minimum 1:2 Risk/Reward).
+const SMC_SYSTEM_PROMPT = `You are Quantiq Assistant, an elite institutional Smart Money Concepts (SMC) quantitative analyst implementing the proven "ONE SETUP FOR LIFE" methodology (by M.J.M).
+
+Your analysis MUST evaluate the 5 CORE LEGO PIECES in exact sequence:
+1. MARKET BIAS & ACCUMULATION/DISTRIBUTION:
+   - Identify whether the market is accumulating, manipulating, or distributing orders.
+2. MANIPULATION (LIQUIDITY SWEEP):
+   - Look for manipulation that raids liquidity: sweeping Previous Day High (PDH), Previous Day Low (PDL), or key swing highs/lows.
+3. DISPLACEMENT & BODY-CLOSE BREAK OF STRUCTURE (BOS):
+   - CRITICAL RULE: "Wicks are there to create damage (traps/sweeps). Candle bodies tell the story (institutional conviction)."
+   - A valid Break of Structure REQUIRES candle bodies closing beyond the swing level, NOT merely wick rejections.
+4. PAIRED ZONE CONFLUENCE:
+   - Price must return to an unmitigated Fair Value Gap (FVG) that is DIRECTLY PAIRED with an Order Block.
+   - Isolated FVGs without a paired Order Block are INVALID.
+5. ENGULFING CANDLE CONFIRMATION (THE TRIGGER):
+   - Entry must be confirmed by an Engulfing Candle (Bullish Engulfing for Buy, Bearish Engulfing for Sell) forming inside the FVG+OB mitigation zone.
+   - The body of the engulfing candle must completely cover the prior counter-candle.
+6. TARGET & RISK MANAGEMENT:
+   - Stop Loss: Placed safely beyond the manipulation swing low/high.
+   - Take Profit: Target nearest intraday opposing liquidity (opposing swing high/low or opposing imbalance). Strict minimum 1:2.0+ Risk/Reward.
 
 Always output strict JSON with the following structure:
 {
   "bias": "bullish" | "bearish" | "neutral",
   "confidence": "high" | "medium" | "low",
-  "summary": "Concise 2-3 sentence institutional SMC summary",
+  "summary": "Concise institutional SMC summary covering Manipulation, Body-Close BOS, Paired FVG+OB, and Engulfing confirmation.",
   "keyLevels": [
     { "price": number, "kind": "support" | "resistance" | "order_block" | "fvg", "note": "description" }
   ],
@@ -24,7 +38,7 @@ Always output strict JSON with the following structure:
       "entry": number,
       "stopLoss": number,
       "takeProfit": number,
-      "rationale": "SMC rationale"
+      "rationale": "SMC rationale citing the 5 Lego Pieces"
     }
   ],
   "risks": ["Risk factor 1", "Risk factor 2"]
@@ -40,18 +54,31 @@ export interface ScaleInContext {
 export async function analyzeChartImageOrCandles(params: {
   symbol: string;
   timeframe: string;
-  candles?: Candle[];
+  candles?: Candle[] | LiveCandle[];
   chartImageBase64?: string;
   userQuery?: string;
   scaleInContext?: ScaleInContext;
   exhaustedPriceZones?: number[];
+  requireEngulfing?: boolean;
 }): Promise<ChartAnalysis> {
-  const { symbol, timeframe, candles = [], chartImageBase64, userQuery, scaleInContext, exhaustedPriceZones = [] } = params;
+  const { symbol, timeframe, candles = [], chartImageBase64, userQuery, scaleInContext, exhaustedPriceZones = [], requireEngulfing = true } = params;
 
   // Fetch real current live market quote
   const liveMarket = await fetchLiveMarketPrice(symbol);
   const currentPrice = liveMarket.price;
   const decimals = symbol.includes('JPY') ? 3 : symbol.includes('USD') && !symbol.includes('BTC') && !symbol.includes('US30') && !symbol.includes('XAU') ? 4 : 2;
+
+  // Run M.J.M's deterministic Setup For Life diagnostic if candles are available
+  const setupOneDiag = (candles && candles.length >= 15)
+    ? evaluateOneSetupForLife({
+        symbol,
+        candles: candles as LiveCandle[],
+        currentPrice,
+        decimals,
+        spentZones: exhaustedPriceZones,
+        requireEngulfing,
+      })
+    : null;
 
   // 1. Direct client-side Gemini Flash call with retry and graceful fallback
   const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -70,7 +97,16 @@ The real-time live spot market price right now for ${symbol} is $${currentPrice.
 All generated trade setups (Entry, Stop Loss, Take Profit) and Key Levels MUST BE CENTERED AND CALCULATED RELATIVE TO THIS CURRENT PRICE ($${currentPrice.toFixed(decimals)}).
 Do NOT hallucinate outdated historical prices. The Entry must be within 0.2% of $${currentPrice.toFixed(decimals)}.
 
-User Inquiry: ${userQuery || 'Analyze the current chart structure, market bias, fair value gaps, and provide actionable SMC setups.'}`;
+User Inquiry: ${userQuery || 'Analyze the current chart structure using the 5 Lego Pieces of the One Setup for Life.'}`;
+
+        if (setupOneDiag) {
+          promptText += `\n\nALGORITHMIC SMC DIAGNOSTIC:
+- Manipulation: ${setupOneDiag.manipulation.description}
+- Body-Close BOS: ${setupOneDiag.bos.description}
+- Paired FVG+OB Zone: ${setupOneDiag.pairedZone?.description || 'No clean paired zone'}
+- Engulfing Trigger: ${setupOneDiag.engulfing.description}
+- Lego Score: ${setupOneDiag.legoScore}/5 Pieces`;
+        }
 
         if (scaleInContext) {
           promptText += `\n\nCRITICAL SMC SCALE-IN (PYRAMIDING) RULES:
@@ -128,7 +164,6 @@ DO NOT use these levels for entry. Look for a fresh unmitigated zone or higher-t
             }
           }
         } else if (res.status === 503 && attempt === 1) {
-          // Brief pause before retry on 503
           await new Promise((r) => setTimeout(r, 600));
           continue;
         }
@@ -189,7 +224,24 @@ DO NOT use these levels for entry. Look for a fresh unmitigated zone or higher-t
     };
   }
 
-  // 4. Standard fallback to deterministic local SMC reading with exact currentPrice anchoring
+  // 4. If M.J.M's Setup One produced a valid setup, prioritize it!
+  if (setupOneDiag && setupOneDiag.setup) {
+    return {
+      bias: setupOneDiag.bias,
+      confidence: setupOneDiag.confidence,
+      summary: setupOneDiag.summary,
+      keyLevels: [
+        { price: Number(setupOneDiag.setup.takeProfit.toFixed(decimals)), kind: 'resistance', note: 'Target: Nearest Opposing Intraday Liquidity Pool' },
+        { price: Number(setupOneDiag.setup.entry.toFixed(decimals)), kind: 'order_block', note: 'Paired FVG+OB Mitigation Zone' },
+        { price: Number(setupOneDiag.setup.stopLoss.toFixed(decimals)), kind: 'support', note: 'Manipulation Invalidation Level' },
+      ],
+      setups: [setupOneDiag.setup],
+      risks: ['Ensure protective Stop Loss remains anchored at the manipulation extreme.'],
+      source: 'rules',
+    };
+  }
+
+  // 5. Standard fallback to deterministic local SMC reading with exact currentPrice anchoring
   const slOffset = currentPrice * 0.003;
   const tpOffset = slOffset * 2.2;
 
@@ -206,7 +258,7 @@ DO NOT use these levels for entry. Look for a fresh unmitigated zone or higher-t
   return {
     bias: 'bullish',
     confidence: 'high',
-    summary: `Current price action for ${symbol} is maintaining strong institutional market structure above key discount demand near $${(currentPrice - slOffset * 0.5).toFixed(decimals)}. Unmitigated Fair Value Gap detected on ${timeframe}.`,
+    summary: `Current price action for ${symbol} is maintaining institutional market structure above key discount demand near $${(currentPrice - slOffset * 0.5).toFixed(decimals)}. Unmitigated Fair Value Gap detected on ${timeframe}.`,
     keyLevels: [
       { price: Number((currentPrice + slOffset * 1.5).toFixed(decimals)), kind: 'resistance', note: 'Buy-Side Liquidity Pool (BSL)' },
       { price: Number(currentPrice.toFixed(decimals)), kind: 'order_block', note: 'Current Price / Mitigation Zone' },

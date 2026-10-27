@@ -272,6 +272,42 @@ export interface LivePendingOrder {
 /**
  * Fetch real live pending limit/stop orders from MT5
  */
+export interface LiveCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+/**
+ * Fetch real live OHLC candles from local MT5 bridge
+ */
+export async function fetchLiveCandles(
+  symbol: string,
+  timeframe: string = 'M15',
+  count: number = 60
+): Promise<LiveCandle[]> {
+  try {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 2000);
+    const res = await fetch(
+      `${LOCAL_BRIDGE_URL}/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&count=${count}`,
+      { signal: ctrl.signal }
+    );
+    clearTimeout(timeout);
+
+    if (res.ok) {
+      const data = await res.json();
+      return Array.isArray(data.candles) ? data.candles : [];
+    }
+  } catch (err) {
+    console.warn('Failed to fetch live candles from MT5 bridge:', err);
+  }
+  return [];
+}
+
 export async function fetchLivePendingOrders(): Promise<LivePendingOrder[]> {
   try {
     const ctrl = new AbortController();

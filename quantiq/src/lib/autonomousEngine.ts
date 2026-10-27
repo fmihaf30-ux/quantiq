@@ -4,10 +4,12 @@ import {
   fetchLiveAccountInfo, 
   modifyMetaApiPosition, 
   executeMetaApiTrade,
-  closeMetaApiPosition
+  closeMetaApiPosition,
+  fetchLiveCandles
 } from './metaapi';
 import { analyzeChartImageOrCandles, sanitizeAndValidateSetups } from './chartAnalysis';
 import { fetchLiveMarketPrice, formatSymbolPrice } from './livePrices';
+import { detectEngulfingConfirmation } from './smcSetupOne';
 
 export interface AutonomousEngineStatus {
   isRunning: boolean;
@@ -514,6 +516,9 @@ class AutonomousAccountEngine {
             .filter((z) => Date.now() - z.timestamp < 45 * 60 * 1000)
             .map((z) => z.price);
 
+          // A4b) Fetch Live M15 Candles for M.J.M's Setup For Life Diagnostic
+          const liveCandles = await fetchLiveCandles(targetSymbol, 'M15', 60);
+
           this.statusText = `Scanning institutional SMC structure for ${targetSymbol} M15...`;
           this.notify();
 
@@ -521,8 +526,10 @@ class AutonomousAccountEngine {
           const analysis = await analyzeChartImageOrCandles({
             symbol: targetSymbol,
             timeframe: 'M15',
+            candles: liveCandles,
             userQuery: `Autonomous high-probability SMC setup scan for ${targetSymbol}. Check Fair Value Gap & Order block mitigation.`,
             exhaustedPriceZones: recentSpentZones,
+            requireEngulfing: settings.requireEngulfingConfirmation !== false,
           });
 
           if (analysis.bias === 'neutral' || analysis.confidence === 'low' || !analysis.setups || analysis.setups.length === 0) {
@@ -554,25 +561,42 @@ class AutonomousAccountEngine {
 
             const targetEntry = setup.entry || livePrice;
             const priceDistancePct = Math.abs(livePrice - targetEntry) / livePrice;
-            const isTappingOrderBlock = priceDistancePct <= 0.0008;
+            const isTappingOrderBlock = priceDistancePct <= 0.0015;
+
+            // M.J.M Lego Piece 5: Engulfing Candle Confirmation Trigger
+            const engulfing = detectEngulfingConfirmation(liveCandles);
+            const isEngulfingConfirmed = engulfing.isConfirmed && engulfing.direction === setup.direction;
+
+            if (settings.requireEngulfingConfirmation !== false && isTappingOrderBlock && !isEngulfingConfirmed) {
+              this.statusText = `${targetSymbol} tapping FVG+OB zone (${formatSymbolPrice(targetSymbol, livePrice)}). Awaiting ${setup.direction.toUpperCase()} Engulfing Candle close confirmation...`;
+              this.notify();
+              this.isProcessingLoop = false;
+              return;
+            }
 
             if (orderModePref === 'LIMIT') {
               chosenOrderType = 'LIMIT';
               execPrice = targetEntry;
-              orderRationale = `User Forced Limit @ Order Block Mitigation ($${formatSymbolPrice(targetSymbol, execPrice)})`;
+              orderRationale = `User Forced Limit @ Order Block Mitigation (${formatSymbolPrice(targetSymbol, execPrice)})`;
             } else if (orderModePref === 'MARKET') {
               chosenOrderType = 'MARKET';
               execPrice = livePrice;
-              orderRationale = `User Forced Market Entry @ Current Spot ($${formatSymbolPrice(targetSymbol, execPrice)})`;
+              orderRationale = isEngulfingConfirmed
+                ? `M.J.M Engulfing Confirmation: ${engulfing.description} — Instant Market Execution`
+                : `User Forced Market Entry @ Current Spot (${formatSymbolPrice(targetSymbol, execPrice)})`;
             } else {
-              if (isTappingOrderBlock) {
+              if (isEngulfingConfirmed) {
                 chosenOrderType = 'MARKET';
                 execPrice = livePrice;
-                orderRationale = `SMC Tapping Zone: Price is actively inside Order Block demand/supply ($${formatSymbolPrice(targetSymbol, livePrice)}) — Instant Market Execution`;
+                orderRationale = `M.J.M Confirmed Reversal: ${engulfing.description} inside FVG+OB zone — Instant Market Execution`;
+              } else if (isTappingOrderBlock) {
+                chosenOrderType = 'MARKET';
+                execPrice = livePrice;
+                orderRationale = `SMC Tapping Zone: Price is actively inside Order Block demand/supply (${formatSymbolPrice(targetSymbol, livePrice)}) — Instant Market Execution`;
               } else {
                 chosenOrderType = 'LIMIT';
                 execPrice = targetEntry;
-                orderRationale = `SMC Retracement: Price is ${(priceDistancePct * 100).toFixed(2)}% away from Order Block ($${formatSymbolPrice(targetSymbol, execPrice)}) — Placed Pending Limit`;
+                orderRationale = `SMC Retracement: Price is ${(priceDistancePct * 100).toFixed(2)}% away from Order Block (${formatSymbolPrice(targetSymbol, execPrice)}) — Placed Pending Limit`;
               }
             }
 

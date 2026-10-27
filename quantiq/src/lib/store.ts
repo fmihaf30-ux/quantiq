@@ -19,6 +19,7 @@ export interface GlobalRiskSettings {
   postExitCooldownMinutes?: number; // default 15 minutes: lockout after trade exits at BE/SL
   allowScaleIn?: boolean; // default true: allows institutional SMC pyramiding into winners with BE locked
   scaleInRiskMultiplier?: number; // default 0.5: 50% risk for scale-in positions
+  requireEngulfingConfirmation?: boolean; // default true: M.J.M confirmation trigger inside FVG+OB zone
   dailyGrowthTargetPct: number; // e.g. 5.0%
   dailyLossLimitPct: number;    // e.g. 3.0%
 }
@@ -50,6 +51,7 @@ class DataService {
       postExitCooldownMinutes: 15, // 15-minute protection lockout after trade exits at BE/SL
       allowScaleIn: true, // SMC pyramiding into confirmed winners with BE locked
       scaleInRiskMultiplier: 0.5, // 50% risk on scale-in position
+      requireEngulfingConfirmation: true, // M.J.M One Setup For Life: wait for engulfing candle confirmation
       dailyGrowthTargetPct: 0, // 0 = no limit / unlimited growth
       dailyLossLimitPct: 0,    // 0 = disabled by default / no daily loss limit
     };

@@ -810,10 +810,31 @@ export const BotsPage: React.FC = () => {
                 </span>
               </button>
             </div>
+
+            {/* M.J.M Engulfing Confirmation Trigger */}
+            <div className="rounded-xl border border-amber-500/20 bg-[#090c12] p-2.5 flex items-center justify-between gap-3">
+              <div>
+                <span className="text-xs font-bold text-amber-300 block">Engulfing Trigger:</span>
+                <span className="text-[10px] text-slate-400">
+                  M.J.M candle confirm in zone
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleUpdateRiskSettings({ requireEngulfingConfirmation: riskSettings.requireEngulfingConfirmation === false ? true : false })}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all ${
+                  riskSettings.requireEngulfingConfirmation !== false
+                    ? 'bg-amber-500 text-slate-950 font-black shadow-[0_0_8px_rgba(245,158,11,0.4)]'
+                    : 'bg-[#151922] text-slate-400 hover:text-white border border-[#283244]'
+                }`}
+              >
+                {riskSettings.requireEngulfingConfirmation !== false ? 'ACTIVE (M.J.M)' : 'OFF'}
+              </button>
+            </div>
           </div>
 
           {/* Advanced Execution Strip: AI Order Dispatch Mode, Partial Profit, Post-Exit Cooldown, SMC Scale-In */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-[#1a202c]">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 pt-2 border-t border-[#1a202c]">
             {/* AI Smart Order Dispatch Mode */}
             <div className="rounded-xl border border-[#202738] bg-[#090c12] p-2.5 space-y-1.5">
               <div className="flex items-center justify-between">
