@@ -1,11 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { 
   createChart, 
   ColorType, 
   type IChartApi, 
   type ISeriesApi, 
   CandlestickSeries,
-  type IPriceLine
+  LineSeries,
+  type IPriceLine,
+  LineStyle,
 } from 'lightweight-charts';
 import { fetchLiveCandles, formatSymbolPrice } from '../lib/livePrices';
 import type { Position } from '../types';
@@ -22,7 +24,8 @@ import {
   Sliders, 
   X, 
   ShieldCheck,
-  ExternalLink
+  ExternalLink,
+  BoxSelect
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 
@@ -36,6 +39,42 @@ interface OrderMappedChartProps {
   latestSMCSetup?: any;
   onClosePosition?: () => void;
   height?: number;
+}
+
+interface PositionBoxCoords {
+  entryY: number;
+  tpY: number;
+  slY: number;
+  trailingY: number | null;
+  startX: number;
+  endX: number;
+  visible: boolean;
+  isLong: boolean;
+  isLimit: boolean;
+  label: string;
+  ticket?: number;
+  entryPrice: number;
+  tpPrice: number;
+  slPrice: number;
+  trailingPrice: number | null;
+  rrRatio: string;
+  rewardCash: string;
+  riskCash: string;
+}
+
+interface OBZoneCoords {
+  visible: boolean;
+  topY: number;
+  bottomY: number;
+  midY: number;
+  startX: number;
+  endX: number;
+  highPrice: number;
+  lowPrice: number;
+  midPrice: number;
+  bosPrice: number | null;
+  bosY: number | null;
+  label: string;
 }
 
 export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
@@ -52,36 +91,23 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const scaleSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
   
   const [candles, setCandles] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showSwings, setShowSwings] = useState(true);
+  const [showZones, setShowZones] = useState(true); // Shaded Demand/Order Block Zone (Matching Screenshot 2)
   const [showLimits, setShowLimits] = useState(true);
-  const [showPriceLines, setShowPriceLines] = useState(false); // Clean mode: default to NO harsh cross-screen lines!
+  const [showPriceLines, setShowPriceLines] = useState(false); // Clean TradingView Position Tool view
   const { theme } = useTheme();
 
-  // Manual interactive drawing tool modes: 'AUTO' | 'LONG' | 'SHORT' | 'LIMIT'
+  // Manual interactive drawing tool modes: 'AUTO' | 'LONG' | 'SHORT'
   const [activeTool, setActiveTool] = useState<'AUTO' | 'LONG' | 'SHORT'>('AUTO');
   const [selectedPendingTicket, setSelectedPendingTicket] = useState<number | null>(null);
 
   // Box overlay pixel coordinates
-  const [boxCoords, setBoxCoords] = useState<{
-    entryY: number;
-    tpY: number;
-    slY: number;
-    trailingY: number | null;
-    startX: number;
-    endX: number;
-    visible: boolean;
-    isLong: boolean;
-    isLimit: boolean;
-    label: string;
-    entryPrice: number;
-    tpPrice: number;
-    slPrice: number;
-    trailingPrice: number | null;
-  }>({
+  const [boxCoords, setBoxCoords] = useState<PositionBoxCoords>({
     entryY: 0,
     tpY: 0,
     slY: 0,
@@ -96,11 +122,31 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     tpPrice: 0,
     slPrice: 0,
     trailingPrice: null,
+    rrRatio: '2.20',
+    rewardCash: '110.00',
+    riskCash: '50.00',
+  });
+
+  // Order Block / FVG Demand Zone coordinates (Matching Screenshot 2)
+  const [obZoneCoords, setObZoneCoords] = useState<OBZoneCoords>({
+    visible: false,
+    topY: 0,
+    bottomY: 0,
+    midY: 0,
+    startX: 0,
+    endX: 0,
+    highPrice: 0,
+    lowPrice: 0,
+    midPrice: 0,
+    bosPrice: null,
+    bosY: null,
+    label: '',
   });
 
   // Filter pending orders matching the current symbol
+  const cleanSym = symbol.toUpperCase().replace('/', '').replace(/M$/, '');
   const relevantPending = pendingOrders.filter(
-    (o) => o.symbol.toUpperCase().replace(/M$/, '') === symbol.toUpperCase().replace(/M$/, '')
+    (o) => o.symbol.toUpperCase().replace('/', '').replace(/M$/, '') === cleanSym
   );
 
   // 1. Fetch live candles on symbol or timeframe change
@@ -122,7 +168,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     };
 
     loadData();
-    const interval = setInterval(loadData, 5000);
+    const interval = setInterval(loadData, 4000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -159,7 +205,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         borderColor: isLight ? '#e2e8f0' : '#1e293b',
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 16,
+        rightOffset: 25, // Breathing room for future position projection
         barSpacing: 9,
         minBarSpacing: 4,
       },
@@ -167,8 +213,8 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         borderColor: isLight ? '#e2e8f0' : '#1e293b',
         autoScale: true,
         scaleMargins: {
-          top: 0.15,
-          bottom: 0.15,
+          top: 0.16, // Ensure plenty of top margin for TP
+          bottom: 0.16, // Ensure plenty of bottom margin for SL and OB Zone
         },
       },
       width: container.clientWidth || 800,
@@ -183,7 +229,19 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
       wickDownColor: '#ef4444',
     });
 
+    // Invisible anchor line series to ensure Lightweight Charts' vertical scale
+    // automatically includes TP, SL, and OB demand levels into view
+    const scaleSeries = chart.addSeries(LineSeries, {
+      color: 'rgba(0, 0, 0, 0)',
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+      lineVisible: false,
+    });
+
     candleSeriesRef.current = candleSeries;
+    scaleSeriesRef.current = scaleSeries;
     chartInstanceRef.current = chart;
 
     // Resize handler
@@ -207,7 +265,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     };
   }, [height]);
 
-  // Apply Theme dynamically to lightweight chart
+  // Apply Theme dynamically
   useEffect(() => {
     if (!chartInstanceRef.current) return;
     const isLight = theme === 'light';
@@ -233,7 +291,88 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     });
   }, [theme]);
 
-  // 3. Update Candles & Swing High / Swing Low Markers
+  // Helper: Detect Institutional Demand/Supply Zone (M.J.M Setup 1 - Matching Screenshot 2)
+  const computeOBZone = useCallback((candleData: any[], isLong: boolean, latestSMC: any) => {
+    if (!candleData || candleData.length < 15) return null;
+
+    // A) If latestSMC provides pairedZone or orderBlockPrice, use that
+    if (latestSMC?.pairedZone?.hasZone) {
+      const pz = latestSMC.pairedZone;
+      const obHigh = pz.obHigh;
+      const obLow = pz.obLow;
+      return {
+        highPrice: Math.max(obHigh, obLow),
+        lowPrice: Math.min(obHigh, obLow),
+        midPrice: Number(((obHigh + obLow) / 2).toFixed(2)),
+        bosPrice: latestSMC.bos?.brokenLevel || null,
+        startCandleTime: candleData[Math.max(0, candleData.length - 35)].time,
+        label: 'SMC PAIRED FVG + ORDER BLOCK ZONE',
+      };
+    }
+
+    // B) Otherwise detect directly from the candle swing structure (M.J.M logic)
+    if (isLong) {
+      // Find the lowest low in the recent 60 candles (the PDL / Liquidity sweep)
+      let minLow = Infinity;
+      let minIdx = -1;
+      const startIdx = Math.max(0, candleData.length - 60);
+      for (let i = startIdx; i < candleData.length - 5; i++) {
+        if (candleData[i].low < minLow) {
+          minLow = candleData[i].low;
+          minIdx = i;
+        }
+      }
+      if (minIdx !== -1) {
+        const obCandle = candleData[minIdx];
+        const obLow = obCandle.low;
+        const obHigh = Math.max(obCandle.open, obCandle.high);
+        // Look for the swing high before the reversal (BOS level)
+        let swingHigh = obHigh;
+        for (let j = Math.max(0, minIdx - 15); j <= minIdx; j++) {
+          if (candleData[j].high > swingHigh) swingHigh = candleData[j].high;
+        }
+        return {
+          highPrice: obHigh,
+          lowPrice: obLow,
+          midPrice: Number(((obHigh + obLow) / 2).toFixed(2)),
+          bosPrice: Number(swingHigh.toFixed(2)),
+          startCandleTime: candleData[Math.max(0, minIdx - 2)].time,
+          label: `DEMAND ZONE / ORDER BLOCK`,
+        };
+      }
+    } else {
+      // Bearish: Find the highest high in recent 60 candles
+      let maxHigh = -Infinity;
+      let maxIdx = -1;
+      const startIdx = Math.max(0, candleData.length - 60);
+      for (let i = startIdx; i < candleData.length - 5; i++) {
+        if (candleData[i].high > maxHigh) {
+          maxHigh = candleData[i].high;
+          maxIdx = i;
+        }
+      }
+      if (maxIdx !== -1) {
+        const obCandle = candleData[maxIdx];
+        const obHigh = obCandle.high;
+        const obLow = Math.min(obCandle.open, obCandle.low);
+        let swingLow = obLow;
+        for (let j = Math.max(0, maxIdx - 15); j <= maxIdx; j++) {
+          if (candleData[j].low < swingLow) swingLow = candleData[j].low;
+        }
+        return {
+          highPrice: obHigh,
+          lowPrice: obLow,
+          midPrice: Number(((obHigh + obLow) / 2).toFixed(2)),
+          bosPrice: Number(swingLow.toFixed(2)),
+          startCandleTime: candleData[Math.max(0, maxIdx - 2)].time,
+          label: `SUPPLY ZONE / ORDER BLOCK`,
+        };
+      }
+    }
+    return null;
+  }, []);
+
+  // 3. Update Candles & Swing High / Low Markers
   useEffect(() => {
     if (!candleSeriesRef.current || candles.length === 0) return;
 
@@ -277,7 +416,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         }
       }
 
-      // If active position, add entry arrow
+      // If active position, place entry arrow
       if (activePosition) {
         const lastCandle = candles[candles.length - 1];
         if (lastCandle) {
@@ -300,36 +439,39 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     }
 
     updateBoxCoordinates();
-  }, [candles, showSwings, activePosition, activeTool, previewLimitPrice, selectedPendingTicket, latestSMCSetup]);
+  }, [candles, showSwings, activePosition, activeTool, previewLimitPrice, selectedPendingTicket, latestSMCSetup, showZones]);
 
   // 4. Update Price Lines & Position Box Coordinates
-  const updateBoxCoordinates = () => {
+  const updateBoxCoordinates = useCallback(() => {
     if (!candleSeriesRef.current || !chartInstanceRef.current || candles.length === 0) {
       setBoxCoords((prev) => ({ ...prev, visible: false }));
+      setObZoneCoords((prev) => ({ ...prev, visible: false }));
       return;
     }
 
     try {
       const series = candleSeriesRef.current;
+      const chart = chartInstanceRef.current;
       const container = chartContainerRef.current;
       if (!container) return;
 
-      const lastClose = candles[candles.length - 1].close;
+      const lastCandle = candles[candles.length - 1];
+      const firstCandle = candles[Math.max(0, candles.length - 25)];
+      const lastClose = lastCandle.close;
       const decimals = symbol.includes('USD') && !symbol.includes('XAU') && !symbol.includes('BTC') ? 4 : 2;
       const minDistance = decimals === 4 ? 0.0020 : (symbol.includes('BTC') ? 150 : 5.0);
 
-      // Determine which position/object to map:
-      // A) Active Live Position
-      // B) Selected or first Pending Limit Order
-      // C) Preview Limit Price (while setting up limit order)
-      // D) Manual Interactive Tool (Long or Short)
+      // Determine mapped trade:
       let isLong = true;
       let isLimit = false;
       let label = '';
+      let ticketNum: number | undefined = undefined;
       let entry = lastClose;
       let tp = 0;
       let sl = 0;
       let trailingSL: number | null = null;
+      let lots = 0.05;
+      let openTimeRaw: any = null;
 
       const targetPending = selectedPendingTicket 
         ? relevantPending.find((o) => o.ticket === selectedPendingTicket)
@@ -352,9 +494,12 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         entry = activePosition.openPrice;
         sl = activePosition.stopLoss || (isLong ? entry - minDistance : entry + minDistance);
         tp = activePosition.takeProfit || (isLong ? entry + minDistance * 2.2 : entry - minDistance * 2.2);
+        ticketNum = activePosition.ticket;
         label = `LIVE MT5 POSITION #${activePosition.ticket}`;
+        lots = activePosition.volume || 0.05;
+        openTimeRaw = activePosition.openTime;
 
-        // Check if Stop Loss has been moved past entry (Smart Trailing SL or Breakeven)
+        // Check if Stop Loss is moved past entry (Breakeven or Trailing SL)
         const isTrailingLocked = isLong ? (sl >= entry) : (sl > 0 && sl <= entry);
         if (isTrailingLocked) {
           trailingSL = sl;
@@ -365,15 +510,17 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         entry = targetPending.priceOpen;
         sl = targetPending.sl || (isLong ? entry - minDistance : entry + minDistance);
         tp = targetPending.tp || (isLong ? entry + minDistance * 2.2 : entry - minDistance * 2.2);
+        ticketNum = targetPending.ticket;
         label = `PENDING LIMIT ORDER #${targetPending.ticket}`;
+        lots = targetPending.volume || 0.05;
       } else if (isLimitMode && previewLimitPrice && previewLimitPrice > 0) {
         isLimit = true;
         entry = previewLimitPrice;
-        isLong = entry <= lastClose; // Buy limit below market, sell limit above
+        isLong = entry <= lastClose;
         sl = isLong ? entry - minDistance : entry + minDistance;
         tp = isLong ? entry + minDistance * 2.2 : entry - minDistance * 2.2;
         label = `PROJECTED LIMIT ORDER @ ${formatSymbolPrice(symbol, entry)}`;
-      } else if (latestSMCSetup && latestSMCSetup.symbol.toUpperCase().replace(/M$/, '') === symbol.toUpperCase().replace(/M$/, '')) {
+      } else if (latestSMCSetup && latestSMCSetup.symbol.toUpperCase().replace('/', '').replace(/M$/, '') === cleanSym) {
         isLong = latestSMCSetup.bias === 'bullish';
         isLimit = latestSMCSetup.orderType === 'LIMIT';
         entry = latestSMCSetup.entry;
@@ -381,7 +528,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         tp = latestSMCSetup.takeProfit;
         label = `AI SMC ${latestSMCSetup.orderType} SETUP (${latestSMCSetup.bias.toUpperCase()})`;
       } else {
-        // Fallback: Default Projected Long SMC Setup
+        // Fallback default setup projection
         isLong = true;
         entry = lastClose;
         sl = entry - minDistance;
@@ -389,20 +536,92 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         label = 'SMC SETUP PROJECTION';
       }
 
-      const entryY = series.priceToCoordinate(entry);
-      const tpY = series.priceToCoordinate(tp);
-      const slY = series.priceToCoordinate(sl);
-      const trailingY = trailingSL ? series.priceToCoordinate(trailingSL) : null;
-
-      if (entryY === null || tpY === null || slY === null) {
-        setBoxCoords((prev) => ({ ...prev, visible: false }));
-        return;
+      // Compute mathematical pixels-per-point ratio for ironclad coordinate projection:
+      // Even if TP or SL is slightly beyond the visible viewport, we NEVER hide the box!
+      let pixelsPerPoint = 1.0;
+      const cHighY = series.priceToCoordinate(lastCandle.high);
+      const cLowY = series.priceToCoordinate(lastCandle.low);
+      if (cHighY !== null && cLowY !== null && Math.abs(lastCandle.high - lastCandle.low) > 0.0001) {
+        pixelsPerPoint = Math.abs(cLowY - cHighY) / Math.abs(lastCandle.high - lastCandle.low);
+      } else {
+        const cCloseY = series.priceToCoordinate(lastCandle.close);
+        const fCloseY = series.priceToCoordinate(firstCandle.close);
+        if (cCloseY !== null && fCloseY !== null && Math.abs(lastCandle.close - firstCandle.close) > 0.0001) {
+          pixelsPerPoint = Math.abs(cCloseY - fCloseY) / Math.abs(lastCandle.close - firstCandle.close);
+        }
       }
 
-      // Span box across right section of chart
-      const width = container.clientWidth;
-      const startX = Math.max(20, Math.floor(width * 0.40));
-      const endX = width - 68; // leave room for right price scale
+      // Safe coordinate calculation: project mathematically if priceToCoordinate is off-screen
+      const rawEntryY = series.priceToCoordinate(entry);
+      let entryY: number;
+      if (rawEntryY !== null) {
+        entryY = Number(rawEntryY);
+      } else {
+        const lastY = Number(series.priceToCoordinate(lastCandle.close) ?? (height / 2));
+        entryY = Math.round(lastY - (entry - lastCandle.close) * pixelsPerPoint);
+      }
+
+      const rawTpY = series.priceToCoordinate(tp);
+      const tpY: number = rawTpY !== null ? Number(rawTpY) : Math.round(entryY - (tp - entry) * pixelsPerPoint);
+
+      const rawSlY = series.priceToCoordinate(sl);
+      const slY: number = rawSlY !== null ? Number(rawSlY) : Math.round(entryY + (entry - sl) * pixelsPerPoint);
+
+      const rawTrailY = trailingSL ? series.priceToCoordinate(trailingSL) : null;
+      const trailingY: number | null = trailingSL 
+        ? (rawTrailY !== null ? Number(rawTrailY) : Math.round(entryY - (trailingSL - entry) * pixelsPerPoint)) 
+        : null;
+
+      // Ensure chart scale includes TP, SL, and OB levels using invisible anchor series
+      if (scaleSeriesRef.current && candles.length >= 2) {
+        const minScalePrice = Math.min(sl, entry, tp);
+        const maxScalePrice = Math.max(sl, entry, tp);
+        scaleSeriesRef.current.setData([
+          { time: candles[0].time, value: minScalePrice },
+          { time: candles[candles.length - 1].time, value: maxScalePrice },
+        ]);
+      }
+
+      // Time-based horizontal anchor: Starts at the EXACT candle bar where the order was taken
+      let startX = Math.max(10, Math.floor(container.clientWidth * 0.35));
+      let orderTimeSec: number | null = null;
+
+      if (openTimeRaw) {
+        const parsed = typeof openTimeRaw === 'number' 
+          ? openTimeRaw 
+          : Math.floor(new Date(openTimeRaw).getTime() / 1000);
+        if (!isNaN(parsed) && parsed > 0) orderTimeSec = parsed;
+      }
+
+      if (orderTimeSec) {
+        let matchedCandle = candles[candles.length - 1];
+        for (let i = candles.length - 1; i >= 0; i--) {
+          if (candles[i].time <= orderTimeSec) {
+            matchedCandle = candles[i];
+            break;
+          }
+        }
+        const xCoord = chart.timeScale().timeToCoordinate(matchedCandle.time as any);
+        if (xCoord !== null) {
+          startX = Math.max(10, Math.round(Number(xCoord)));
+        }
+      } else if (activeTool !== 'AUTO') {
+        const targetCandle = candles[Math.max(0, candles.length - 15)];
+        const xCoord = chart.timeScale().timeToCoordinate(targetCandle.time as any);
+        if (xCoord !== null) {
+          startX = Math.max(10, Math.round(Number(xCoord)));
+        }
+      }
+
+      // Span forward into future time / right edge of chart
+      const endX = container.clientWidth - 68;
+
+      const slDist = Math.abs(entry - sl);
+      const tpDist = Math.abs(tp - entry);
+      const rr = slDist > 0 ? (tpDist / slDist).toFixed(2) : '2.20';
+      const contractMult = symbol.includes('EUR') || symbol.includes('GBP') ? 100000 : 1000;
+      const rewardCashVal = (tpDist * lots * contractMult).toFixed(2);
+      const riskCashVal = (slDist * lots * contractMult).toFixed(2);
 
       setBoxCoords({
         entryY,
@@ -415,22 +634,66 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         isLong,
         isLimit,
         label,
+        ticket: ticketNum,
         entryPrice: entry,
         tpPrice: tp,
         slPrice: sl,
         trailingPrice: trailingSL,
+        rrRatio: rr,
+        rewardCash: rewardCashVal,
+        riskCash: riskCashVal,
       });
-    } catch (e) {
-      // Ignored during rapid resize
-    }
-  };
 
-  // 5. Manage TradingView Price Lines
+      // 5. Order Block / FVG Demand Zone Calculation (Matching Screenshot 2 bottom box)
+      const obData = computeOBZone(candles, isLong, latestSMCSetup);
+      if (obData && showZones) {
+        const rawTopY = series.priceToCoordinate(obData.highPrice);
+        const rawBottomY = series.priceToCoordinate(obData.lowPrice);
+        const rawMidY = series.priceToCoordinate(obData.midPrice);
+        const rawBosY = obData.bosPrice ? series.priceToCoordinate(obData.bosPrice) : null;
+
+        const obTopY: number = rawTopY !== null ? Number(rawTopY) : Math.round(entryY - (obData.highPrice - entry) * pixelsPerPoint);
+        const obBottomY: number = rawBottomY !== null ? Number(rawBottomY) : Math.round(entryY - (obData.lowPrice - entry) * pixelsPerPoint);
+        const obMidY: number = rawMidY !== null ? Number(rawMidY) : Math.round(entryY - (obData.midPrice - entry) * pixelsPerPoint);
+        const obBosY: number | null = obData.bosPrice
+          ? (rawBosY !== null ? Number(rawBosY) : Math.round(entryY - (obData.bosPrice - entry) * pixelsPerPoint))
+          : null;
+
+        let zStartX = Math.max(10, Math.floor(container.clientWidth * 0.25));
+        if (obData.startCandleTime) {
+          const zx = chart.timeScale().timeToCoordinate(obData.startCandleTime as any);
+          if (zx !== null) zStartX = Math.max(10, Math.round(Number(zx)));
+        }
+        const zEndX = Math.min(container.clientWidth - 68, Math.max(zStartX + 140, startX + 80));
+
+        setObZoneCoords({
+          visible: true,
+          topY: Math.min(obTopY, obBottomY),
+          bottomY: Math.max(obTopY, obBottomY),
+          midY: obMidY,
+          startX: zStartX,
+          endX: zEndX,
+          highPrice: obData.highPrice,
+          lowPrice: obData.lowPrice,
+          midPrice: obData.midPrice,
+          bosPrice: obData.bosPrice,
+          bosY: obBosY,
+          label: obData.label,
+        });
+      } else {
+        setObZoneCoords((prev) => ({ ...prev, visible: false }));
+      }
+    } catch (e) {
+      // Ignored during rapid resize/scroll
+    }
+  }, [candles, symbol, activePosition, activeTool, previewLimitPrice, selectedPendingTicket, latestSMCSetup, isLimitMode, showLimits, showZones, cleanSym, relevantPending, computeOBZone, height]);
+
+  // 6. Manage TradingView Price Scale Badges & Price Lines
   useEffect(() => {
     if (!candleSeriesRef.current) return;
     const series = candleSeriesRef.current;
 
-    // Remove existing price lines
+    // Clear old lines
     priceLinesRef.current.forEach((pl) => {
       try {
         series.removePriceLine(pl);
@@ -440,61 +703,88 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     });
     priceLinesRef.current = [];
 
-    // Draw Price Lines for mapped object ONLY if showPriceLines is enabled
-    if (boxCoords.visible && showPriceLines) {
+    if (boxCoords.visible) {
       const isLight = theme === 'light';
-      // Entry Line
-      const entryLine = series.createPriceLine({
-        price: boxCoords.entryPrice,
-        color: boxCoords.isLimit ? '#f59e0b' : (isLight ? '#475569' : '#ffffff'),
-        lineWidth: 1,
-        lineStyle: 2, // Dashed for a clean, non-obtrusive look
-        axisLabelVisible: true,
-        title: `${boxCoords.isLimit ? 'LIMIT' : 'ENTRY'}: ${formatSymbolPrice(symbol, boxCoords.entryPrice)}`,
-      });
-      priceLinesRef.current.push(entryLine);
 
-      // Take Profit Line
+      // 1) Target Price Line -> Sky Blue badge on right scale (Matching Screenshot 2)
       if (boxCoords.tpPrice) {
         const tpLine = series.createPriceLine({
           price: boxCoords.tpPrice,
-          color: '#10b981',
+          color: '#2196f3',
           lineWidth: 1,
-          lineStyle: 2,
+          lineStyle: showPriceLines ? LineStyle.Dashed : LineStyle.Dotted,
           axisLabelVisible: true,
-          title: `TARGET (TP): ${formatSymbolPrice(symbol, boxCoords.tpPrice)}`,
+          title: 'TARGET',
         });
         priceLinesRef.current.push(tpLine);
       }
 
-      // Stop Loss Line
+      // 2) Entry Price Line -> Dark Slate badge on right scale (Matching Screenshot 2)
+      if (boxCoords.entryPrice) {
+        const entryLine = series.createPriceLine({
+          price: boxCoords.entryPrice,
+          color: boxCoords.isLimit ? '#f59e0b' : (isLight ? '#334155' : '#64748b'),
+          lineWidth: 1,
+          lineStyle: showPriceLines ? LineStyle.Solid : LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: boxCoords.isLimit ? 'LIMIT' : 'ENTRY',
+        });
+        priceLinesRef.current.push(entryLine);
+      }
+
+      // 3) Stop Loss Line -> Gray badge on right scale (Matching Screenshot 2)
       if (boxCoords.slPrice) {
         const slLine = series.createPriceLine({
           price: boxCoords.slPrice,
-          color: '#ef4444',
+          color: '#787b86',
           lineWidth: 1,
-          lineStyle: 2,
+          lineStyle: showPriceLines ? LineStyle.Dashed : LineStyle.Dotted,
           axisLabelVisible: true,
-          title: `STOP LOSS (SL): ${formatSymbolPrice(symbol, boxCoords.slPrice)}`,
+          title: 'STOP',
         });
         priceLinesRef.current.push(slLine);
       }
 
-      // Smart Trailing SL Protected Line
+      // 4) Trailing SL / Breakeven Protected Line
       if (boxCoords.trailingPrice) {
         const trailLine = series.createPriceLine({
           price: boxCoords.trailingPrice,
           color: '#06b6d4',
           lineWidth: 1,
-          lineStyle: 1, // Dotted cyan
+          lineStyle: LineStyle.Dotted,
           axisLabelVisible: true,
-          title: `🛡️ TRAILING SL: ${formatSymbolPrice(symbol, boxCoords.trailingPrice)}`,
+          title: 'BE / TRAIL',
         });
         priceLinesRef.current.push(trailLine);
       }
     }
 
-    // Also draw subtle dashed lines for other pending limit orders
+    // 5) Demand / Order Block Zone Price Scale Badges (Matching Screenshot 2 cyan level 4004.01)
+    if (obZoneCoords.visible && showZones) {
+      const obLowLine = series.createPriceLine({
+        price: obZoneCoords.lowPrice,
+        color: '#06b6d4',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'SWEEP',
+      });
+      priceLinesRef.current.push(obLowLine);
+
+      if (obZoneCoords.bosPrice) {
+        const bosLine = series.createPriceLine({
+          price: obZoneCoords.bosPrice,
+          color: '#38bdf8',
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          axisLabelVisible: true,
+          title: 'BOS',
+        });
+        priceLinesRef.current.push(bosLine);
+      }
+    }
+
+    // 6) Other pending limit orders
     if (showLimits && relevantPending.length > 0) {
       relevantPending.forEach((ord) => {
         if (ord.ticket !== selectedPendingTicket) {
@@ -502,9 +792,9 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
             price: ord.priceOpen,
             color: '#f59e0b',
             lineWidth: 1,
-            lineStyle: 2,
+            lineStyle: LineStyle.Dashed,
             axisLabelVisible: true,
-            title: `LIMIT #${ord.ticket} @ ${formatSymbolPrice(symbol, ord.priceOpen)}`,
+            title: `LIMIT #${ord.ticket}`,
           });
           priceLinesRef.current.push(pLine);
         }
@@ -512,31 +802,43 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     }
 
     updateBoxCoordinates();
-  }, [boxCoords.visible, boxCoords.entryPrice, boxCoords.tpPrice, boxCoords.slPrice, boxCoords.trailingPrice, showLimits, showPriceLines, theme, relevantPending.length]);
+  }, [boxCoords.visible, boxCoords.entryPrice, boxCoords.tpPrice, boxCoords.slPrice, boxCoords.trailingPrice, obZoneCoords.visible, obZoneCoords.lowPrice, obZoneCoords.bosPrice, showZones, showLimits, showPriceLines, theme, relevantPending.length, selectedPendingTicket, updateBoxCoordinates]);
 
-  // Hook visible logical range changes to update box coordinates
+  // 7. Real-Time Tracking on Scroll, Pan, Zoom
   useEffect(() => {
     if (!chartInstanceRef.current) return;
     const timeScale = chartInstanceRef.current.timeScale();
-    const handleRangeChange = () => {
-      updateBoxCoordinates();
+    let rafId: number | null = null;
+    const onMove = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        updateBoxCoordinates();
+      });
     };
 
-    timeScale.subscribeVisibleLogicalRangeChange(handleRangeChange);
+    timeScale.subscribeVisibleLogicalRangeChange(onMove);
+    timeScale.subscribeVisibleTimeRangeChange(onMove);
+
     return () => {
-      timeScale.unsubscribeVisibleLogicalRangeChange(handleRangeChange);
+      if (rafId) cancelAnimationFrame(rafId);
+      timeScale.unsubscribeVisibleLogicalRangeChange(onMove);
+      timeScale.unsubscribeVisibleTimeRangeChange(onMove);
     };
-  }, [activePosition, activeTool, previewLimitPrice, relevantPending]);
+  }, [updateBoxCoordinates]);
 
   const lastCandle = candles[candles.length - 1];
   const prevCandle = candles[candles.length - 2];
   const priceChange = lastCandle && prevCandle ? lastCandle.close - prevCandle.close : 0;
   const priceChangePercent = prevCandle ? (priceChange / prevCandle.close) * 100 : 0;
 
-  // Box heights and vertical positions
-  const tpHeight = Math.abs(boxCoords.entryY - boxCoords.tpY);
-  const slHeight = Math.abs(boxCoords.entryY - boxCoords.slY);
+  // Box heights and dimensions
+  const tpHeight = Math.max(4, Math.abs(boxCoords.entryY - boxCoords.tpY));
+  const slHeight = Math.max(4, Math.abs(boxCoords.entryY - boxCoords.slY));
   const boxWidth = Math.max(10, boxCoords.endX - boxCoords.startX);
+
+  // Demand / OB Zone dimensions
+  const obZoneHeight = Math.max(6, obZoneCoords.bottomY - obZoneCoords.topY);
+  const obZoneWidth = Math.max(20, obZoneCoords.endX - obZoneCoords.startX);
 
   return (
     <div className={`relative flex flex-col w-full h-full select-none overflow-hidden ${theme === 'light' ? 'bg-white' : 'bg-[#07090e]'}`}>
@@ -545,7 +847,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         theme === 'light' ? 'bg-slate-50 border-slate-200 text-slate-800' : 'border-[#141824] bg-[#0c0f17] text-slate-200'
       }`}>
         <div className="flex items-center gap-3">
-          <span className={`font-extrabold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>{symbol}</span>
+          <span className={`font-extrabold text-sm ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>{symbol}</span>
           <span className={`rounded px-2 py-0.5 text-[11px] font-bold border ${
             theme === 'light' ? 'bg-white text-slate-700 border-slate-300' : 'bg-[#1a1f2c] text-slate-300 border-transparent'
           }`}>
@@ -594,6 +896,34 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
             <span>▼ Short Tool</span>
           </button>
 
+          {/* Demand / Order Block Zone Toggle (Matching Screenshot 2) */}
+          <button
+            onClick={() => setShowZones(!showZones)}
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+              showZones
+                ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40'
+                : (theme === 'light' ? 'bg-white text-slate-400 border-slate-200' : 'bg-[#121622] text-slate-500 border-[#222a3d]')
+            }`}
+            title="Toggle Shaded Institutional Demand / Order Block Zone Box"
+          >
+            <BoxSelect className="h-3 w-3" />
+            <span>Zones</span>
+          </button>
+
+          {/* Swing Structure Toggle */}
+          <button
+            onClick={() => setShowSwings(!showSwings)}
+            className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold transition-all border ${
+              showSwings
+                ? 'bg-sky-500/20 text-sky-500 border-sky-500/30'
+                : (theme === 'light' ? 'bg-white text-slate-400 border-slate-200' : 'bg-[#121622] text-slate-500 border-[#222a3d]')
+            }`}
+            title="Toggle SH (Swing High) and SL (Swing Low) Structural Labels"
+          >
+            <Layers className="h-3 w-3" />
+            <span>Swings</span>
+          </button>
+
           {/* Clean Mode / Full-width Price Lines Toggle */}
           <button
             onClick={() => setShowPriceLines(!showPriceLines)}
@@ -624,20 +954,6 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
             </button>
           )}
 
-          {/* Swing Structure Toggle */}
-          <button
-            onClick={() => setShowSwings(!showSwings)}
-            className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold transition-all border ${
-              showSwings
-                ? 'bg-sky-500/20 text-sky-500 border-sky-500/30'
-                : (theme === 'light' ? 'bg-white text-slate-400 border-slate-200' : 'bg-[#121622] text-slate-500 border-[#222a3d]')
-            }`}
-            title="Toggle SH (Swing High) and SL (Swing Low) Structural Labels"
-          >
-            <Layers className="h-3 w-3" />
-            <span>Swings</span>
-          </button>
-
           {/* Clear Manual Tool */}
           {activeTool !== 'AUTO' && (
             <button
@@ -653,8 +969,8 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
           )}
 
           {activePosition && (
-            <span className="flex items-center gap-1 rounded-lg bg-emerald-500/20 px-2 py-1 text-[11px] font-bold text-emerald-500 border border-emerald-500/30">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="flex items-center gap-1 rounded-lg bg-emerald-500/20 px-2.5 py-1 text-[11px] font-bold text-emerald-400 border border-emerald-500/30">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
               <span>LIVE #{activePosition.ticket}</span>
             </span>
           )}
@@ -672,10 +988,65 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
           {symbol}, {timeframe}
         </div>
 
-        {/* TRADINGVIEW-STYLE LONG / SHORT POSITION BOX OVERLAY */}
+        {/* 1. ORDER BLOCK / FVG DEMAND ZONE BOX (MATCHING SCREENSHOT 2 BOTTOM RECTANGLE) */}
+        {obZoneCoords.visible && showZones && (
+          <div
+            className="absolute pointer-events-none font-mono transition-all duration-75 z-10"
+            style={{
+              left: `${obZoneCoords.startX}px`,
+              top: `${obZoneCoords.topY}px`,
+              width: `${obZoneWidth}px`,
+              height: `${obZoneHeight}px`,
+            }}
+          >
+            {/* Shaded Rectangle Zone */}
+            <div className="relative w-full h-full border border-cyan-400/60 bg-cyan-500/10 rounded-sm shadow-[0_0_12px_rgba(6,182,212,0.15)] flex flex-col justify-between p-1.5 overflow-hidden">
+              {/* Top Label */}
+              <div className="flex items-center justify-between z-10">
+                <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold border ${
+                  theme === 'light' 
+                    ? 'bg-white/95 text-cyan-800 border-cyan-300' 
+                    : 'bg-[#07090e]/90 text-cyan-300 border-cyan-500/40'
+                }`}>
+                  {obZoneCoords.label} ({formatSymbolPrice(symbol, obZoneCoords.lowPrice)} - {formatSymbolPrice(symbol, obZoneCoords.highPrice)})
+                </span>
+                <span className="text-[8px] font-bold text-cyan-400/80 px-1 py-0.5 rounded bg-cyan-950/60">
+                  50% EQ: {formatSymbolPrice(symbol, obZoneCoords.midPrice)}
+                </span>
+              </div>
+
+              {/* Dashed Midline at 50% Mean Threshold (Matching Screenshot 2) */}
+              <div
+                className="absolute left-0 w-full border-t border-dashed border-cyan-400/70"
+                style={{
+                  top: `${Math.max(2, obZoneCoords.midY - obZoneCoords.topY)}px`,
+                }}
+              />
+
+              {/* Bottom Subtitle */}
+              <span className="text-[8px] font-bold self-end text-cyan-300/70 z-10">
+                INSTITUTIONAL LIQUIDITY SWEEP & MITIGATION
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* BOS Reference Line (Matching Screenshot 2 Level 4025.302) */}
+        {obZoneCoords.visible && showZones && obZoneCoords.bosPrice && obZoneCoords.bosY !== null && (
+          <div
+            className="absolute left-0 w-full border-t border-dashed border-sky-400/80 pointer-events-none flex items-center justify-end pr-20 z-10"
+            style={{ top: `${obZoneCoords.bosY}px` }}
+          >
+            <span className="text-[9px] font-extrabold text-sky-300 bg-[#07090e]/90 border border-sky-400/50 px-2 py-0.5 rounded -translate-y-1/2 shadow">
+              BOS: {formatSymbolPrice(symbol, obZoneCoords.bosPrice)}
+            </span>
+          </div>
+        )}
+
+        {/* 2. TRADINGVIEW-STYLE LONG / SHORT POSITION BOX OVERLAY (MATCHING SCREENSHOT 2) */}
         {boxCoords.visible && (
           <div
-            className="absolute pointer-events-none transition-all duration-75 font-mono"
+            className="absolute pointer-events-none transition-all duration-75 font-mono z-20"
             style={{
               left: `${boxCoords.startX}px`,
               top: `${Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
@@ -683,12 +1054,12 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
               height: `${Math.max(boxCoords.entryY, boxCoords.tpY, boxCoords.slY) - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
             }}
           >
-            {/* Case 1: LONG POSITION (Blue Take Profit on Top, Gray Stop Loss on Bottom) */}
+            {/* Case 1: LONG POSITION (Blue Take Profit on Top, Soft Gray Stop Loss on Bottom) */}
             {boxCoords.isLong ? (
               <>
-                {/* Take Profit Rectangle (Blue in TradingView) */}
+                {/* Take Profit Rectangle (Sky Blue Zone in TradingView) */}
                 <div
-                  className="absolute left-0 w-full border border-sky-400/80 bg-sky-500/20 rounded-t-sm flex flex-col justify-between p-2 shadow-[0_0_15px_rgba(56,189,248,0.15)]"
+                  className="absolute left-0 w-full border border-sky-400/80 bg-sky-500/20 rounded-t-sm flex flex-col justify-between p-2 shadow-[0_0_15px_rgba(56,189,248,0.15)] overflow-hidden"
                   style={{
                     top: `${boxCoords.tpY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                     height: `${tpHeight}px`,
@@ -698,9 +1069,9 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                     <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
                       theme === 'light'
                         ? 'bg-white/95 text-sky-700 border-sky-300 shadow-sm'
-                        : 'bg-[#07090e]/90 text-sky-300 border-sky-400/40'
+                        : 'bg-[#07090e]/90 text-sky-300 border-sky-400/40 shadow'
                     }`}>
-                      TARGET: +2.20R ({formatSymbolPrice(symbol, boxCoords.tpPrice)})
+                      TARGET: +{boxCoords.rrRatio}R ({formatSymbolPrice(symbol, boxCoords.tpPrice)})
                     </span>
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                       theme === 'light' ? 'bg-white/90 text-sky-800 border border-sky-200' : 'bg-[#07090e]/75 text-sky-200'
@@ -711,7 +1082,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                   <span className={`text-[10px] font-bold self-end px-1.5 py-0.5 rounded ${
                     theme === 'light' ? 'text-sky-700 bg-white/90 shadow-sm' : 'text-sky-300/80 bg-[#07090e]/60'
                   }`}>
-                    Reward: +$110.00 (1:2.2)
+                    Reward: +${boxCoords.rewardCash} (1:{boxCoords.rrRatio})
                   </span>
                 </div>
 
@@ -740,9 +1111,9 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                   </div>
                 </div>
 
-                {/* Stop Loss Rectangle (Gray/Neutral in TradingView) */}
+                {/* Stop Loss Rectangle (Soft Gray/Neutral in TradingView - Matching Screenshot 2) */}
                 <div
-                  className="absolute left-0 w-full border border-slate-400/60 bg-slate-400/20 rounded-b-sm flex flex-col justify-between p-2"
+                  className="absolute left-0 w-full border border-slate-400/60 bg-slate-400/20 rounded-b-sm flex flex-col justify-between p-2 overflow-hidden"
                   style={{
                     top: `${boxCoords.entryY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                     height: `${slHeight}px`,
@@ -756,7 +1127,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                         top: `${boxCoords.trailingY - boxCoords.entryY}px`,
                       }}
                     >
-                      <span className="bg-cyan-950/90 text-cyan-300 border border-cyan-400 px-1.5 py-0.5 rounded text-[9px] font-extrabold -translate-y-1/2">
+                      <span className="bg-cyan-950/90 text-cyan-300 border border-cyan-400 px-1.5 py-0.5 rounded text-[9px] font-extrabold -translate-y-1/2 shadow">
                         🛡️ TRAILING SL LOCKED @ {formatSymbolPrice(symbol, boxCoords.trailingPrice || 0)}
                       </span>
                     </div>
@@ -765,13 +1136,13 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                   <span className={`text-[10px] font-bold self-end px-1.5 py-0.5 rounded ${
                     theme === 'light' ? 'text-slate-700 bg-white/90 shadow-sm' : 'text-slate-300/80 bg-[#07090e]/60'
                   }`}>
-                    Risk: -1.00R (-$50.00)
+                    Risk: -1.00R (-${boxCoords.riskCash})
                   </span>
                   <div className="flex items-center justify-between">
                     <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
                       theme === 'light'
                         ? 'bg-white/95 text-rose-700 border-rose-300 shadow-sm'
-                        : 'bg-[#07090e]/90 text-slate-300 border-slate-400/40'
+                        : 'bg-[#07090e]/90 text-slate-300 border-slate-400/40 shadow'
                     }`}>
                       STOP LOSS: -1.00R ({formatSymbolPrice(symbol, boxCoords.slPrice)})
                     </span>
@@ -784,11 +1155,11 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                 </div>
               </>
             ) : (
-              /* Case 2: SHORT POSITION (Gray Stop Loss on Top, Blue Take Profit on Bottom) */
+              /* Case 2: SHORT POSITION (Soft Gray Stop Loss on Top, Blue Take Profit on Bottom) */
               <>
-                {/* Stop Loss Rectangle (Gray/Neutral on Top in TradingView) */}
+                {/* Stop Loss Rectangle (Soft Gray on Top) */}
                 <div
-                  className="absolute left-0 w-full border border-slate-400/60 bg-slate-400/20 rounded-t-sm flex flex-col justify-between p-2"
+                  className="absolute left-0 w-full border border-slate-400/60 bg-slate-400/20 rounded-t-sm flex flex-col justify-between p-2 overflow-hidden"
                   style={{
                     top: `${boxCoords.slY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                     height: `${slHeight}px`,
@@ -798,7 +1169,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                     <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
                       theme === 'light'
                         ? 'bg-white/95 text-rose-700 border-rose-300 shadow-sm'
-                        : 'bg-[#07090e]/90 text-slate-300 border-slate-400/40'
+                        : 'bg-[#07090e]/90 text-slate-300 border-slate-400/40 shadow'
                     }`}>
                       STOP LOSS: -1.00R ({formatSymbolPrice(symbol, boxCoords.slPrice)})
                     </span>
@@ -817,7 +1188,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                         top: `${boxCoords.trailingY - boxCoords.slY}px`,
                       }}
                     >
-                      <span className="bg-cyan-950/90 text-cyan-300 border border-cyan-400 px-1.5 py-0.5 rounded text-[9px] font-extrabold -translate-y-1/2">
+                      <span className="bg-cyan-950/90 text-cyan-300 border border-cyan-400 px-1.5 py-0.5 rounded text-[9px] font-extrabold -translate-y-1/2 shadow">
                         🛡️ TRAILING SL LOCKED @ {formatSymbolPrice(symbol, boxCoords.trailingPrice || 0)}
                       </span>
                     </div>
@@ -826,7 +1197,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                   <span className={`text-[10px] font-bold self-end px-1.5 py-0.5 rounded ${
                     theme === 'light' ? 'text-slate-700 bg-white/90 shadow-sm' : 'text-slate-300/80 bg-[#07090e]/60'
                   }`}>
-                    Risk: -1.00R (-$50.00)
+                    Risk: -1.00R (-${boxCoords.riskCash})
                   </span>
                 </div>
 
@@ -855,9 +1226,9 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                   </div>
                 </div>
 
-                {/* Take Profit Rectangle (Blue on Bottom in TradingView) */}
+                {/* Take Profit Rectangle (Blue on Bottom) */}
                 <div
-                  className="absolute left-0 w-full border border-sky-400/80 bg-sky-500/20 rounded-b-sm flex flex-col justify-between p-2 shadow-[0_0_15px_rgba(56,189,248,0.15)]"
+                  className="absolute left-0 w-full border border-sky-400/80 bg-sky-500/20 rounded-b-sm flex flex-col justify-between p-2 shadow-[0_0_15px_rgba(56,189,248,0.15)] overflow-hidden"
                   style={{
                     top: `${boxCoords.entryY - Math.min(boxCoords.entryY, boxCoords.tpY, boxCoords.slY)}px`,
                     height: `${tpHeight}px`,
@@ -866,15 +1237,15 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
                   <span className={`text-[10px] font-bold self-end px-1.5 py-0.5 rounded ${
                     theme === 'light' ? 'text-sky-700 bg-white/90 shadow-sm' : 'text-sky-300/80 bg-[#07090e]/60'
                   }`}>
-                    Reward: +$110.00 (1:2.2)
+                    Reward: +${boxCoords.rewardCash} (1:{boxCoords.rrRatio})
                   </span>
                   <div className="flex items-center justify-between">
                     <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
                       theme === 'light'
                         ? 'bg-white/95 text-sky-700 border-sky-300 shadow-sm'
-                        : 'bg-[#07090e]/90 text-sky-300 border-sky-400/40'
+                        : 'bg-[#07090e]/90 text-sky-300 border-sky-400/40 shadow'
                     }`}>
-                      TARGET: +2.20R ({formatSymbolPrice(symbol, boxCoords.tpPrice)})
+                      TARGET: +{boxCoords.rrRatio}R ({formatSymbolPrice(symbol, boxCoords.tpPrice)})
                     </span>
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                       theme === 'light' ? 'bg-white/90 text-sky-800 border border-sky-200' : 'bg-[#07090e]/75 text-sky-200'

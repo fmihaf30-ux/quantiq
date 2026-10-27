@@ -164,11 +164,11 @@ export const BotsPage: React.FC = () => {
 
   // Filter positions and pending orders for the selected asset
   const activePositionsForAsset = positions.filter(
-    (p) => p.symbol.toUpperCase().replace(/M$/, '') === selectedAsset.symbol
+    (p) => p.symbol.toUpperCase().replace('/', '').replace(/M$/, '') === selectedAsset.symbol.toUpperCase().replace('/', '').replace(/M$/, '')
   );
 
   const pendingOrdersForAsset = pendingOrders.filter(
-    (o) => o.symbol.toUpperCase().replace(/M$/, '') === selectedAsset.symbol
+    (o) => o.symbol.toUpperCase().replace('/', '').replace(/M$/, '') === selectedAsset.symbol.toUpperCase().replace('/', '').replace(/M$/, '')
   );
 
   // Trish Auto Analyze & Direct MT5 Execution Function
