@@ -36,7 +36,9 @@ import {
   XCircle,
   Eye,
   ChevronDown,
-  ExternalLink
+  ExternalLink,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 
@@ -82,6 +84,7 @@ export const BotsPage: React.FC = () => {
 
   // Order Execution & Limit Order Controls
   const [chartEngine, setChartEngine] = useState<'mapped' | 'tradingview'>('mapped');
+  const [isChartExpanded, setIsChartExpanded] = useState(false);
   const [orderMode, setOrderMode] = useState<'AUTO' | 'MARKET' | 'LIMIT'>('AUTO');
   const [customLimitPrice, setCustomLimitPrice] = useState<string>('');
   const [isCancellingOrder, setIsCancellingOrder] = useState<number | null>(null);
@@ -1263,13 +1266,29 @@ export const BotsPage: React.FC = () => {
               <span>TradingView.com</span>
               <ExternalLink className="h-3 w-3 text-purple-400" />
             </a>
+
+            {/* Expand / Maximize Chart View */}
+            <button
+              onClick={() => setIsChartExpanded(!isChartExpanded)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-[11px] font-bold transition-all ${
+                isChartExpanded
+                  ? 'bg-purple-600 text-white border-purple-400 shadow-[0_0_12px_rgba(168,85,247,0.4)]'
+                  : theme === 'light'
+                    ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm'
+                    : 'bg-[#121622] border-[#222a3d] text-slate-300 hover:text-white hover:border-purple-500/50'
+              }`}
+              title={isChartExpanded ? 'Restore split sidebar view' : 'Expand chart to wide 100% full view'}
+            >
+              {isChartExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5 text-purple-400" />}
+              <span>{isChartExpanded ? 'Split View' : 'Wide View'}</span>
+            </button>
           </div>
         </div>
 
         {/* Chart + Order Mapping Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 min-h-[580px]">
+        <div className="grid grid-cols-1 lg:grid-cols-12 min-h-[660px]">
           {/* Left/Center: Authentic Real-Time Chart with Programmatic Long/Short Position Box Mapping */}
-          <div className="lg:col-span-8 flex flex-col border-b lg:border-b-0 lg:border-r border-[#1e2434] bg-[#07090e] relative min-h-[460px]">
+          <div className={`${isChartExpanded ? 'lg:col-span-12' : 'lg:col-span-9'} flex flex-col border-b lg:border-b-0 ${isChartExpanded ? '' : 'lg:border-r'} border-[#1e2434] bg-[#07090e] relative min-h-[640px]`}>
             {chartEngine === 'mapped' ? (
               <OrderMappedChart
                 symbol={selectedAsset.symbol}
@@ -1280,13 +1299,14 @@ export const BotsPage: React.FC = () => {
                 isLimitMode={orderMode === 'LIMIT' || (orderMode === 'AUTO' && engineStatus.latestSMCSetup?.orderType === 'LIMIT')}
                 latestSMCSetup={engineStatus.latestSMCSetup}
                 onClosePosition={handleClosePosition}
+                height={isChartExpanded ? 720 : 640}
               />
             ) : (
               <iframe
                 key={`${selectedAsset.tv}-${selectedTf.val}-${theme}`}
                 src={tvEmbedUrl}
                 title={`TradingView Auto Trading Chart ${selectedAsset.symbol}`}
-                className="w-full h-full border-0 min-h-[540px]"
+                className="w-full h-full border-0 min-h-[640px]"
                 allow="fullscreen"
                 loading="eager"
               />
@@ -1294,7 +1314,8 @@ export const BotsPage: React.FC = () => {
           </div>
 
           {/* Right Column: Visual Long/Short Position Tool & MT5 Order Mapper */}
-          <div className="lg:col-span-4 flex flex-col bg-[#0b0e15] p-5 space-y-5">
+          {!isChartExpanded && (
+            <div className="lg:col-span-3 flex flex-col bg-[#0b0e15] p-4 space-y-4">
             {/* Order Configuration Bar: Market vs Limit */}
             <div className="rounded-2xl border border-[#202738] bg-[#121622] p-4 space-y-3.5">
               <div className="flex items-center justify-between border-b border-[#1d2332] pb-2.5">
@@ -1647,6 +1668,7 @@ export const BotsPage: React.FC = () => {
               )}
             </div>
           </div>
+          )}
         </div>
       </div>
 

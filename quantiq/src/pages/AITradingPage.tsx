@@ -18,6 +18,7 @@ import { fetchLiveMarketPrice, formatSymbolPrice } from '../lib/livePrices';
 import { analyzeChartImageOrCandles } from '../lib/chartAnalysis';
 import { store } from '../lib/store';
 import { executeMetaApiTrade } from '../lib/metaapi';
+import { OrderMappedChart } from '../components/OrderMappedChart';
 import type { ChartAnalysis, TradeSetup } from '@engine';
 
 const ASSETS = [
@@ -48,6 +49,7 @@ export const AITradingPage: React.FC = () => {
   const [chatInput, setChatInput] = useState('');
   const [isExecutingTrade, setIsExecutingTrade] = useState(false);
   const [tradeNotice, setTradeNotice] = useState<string | null>(null);
+  const [chartEngine, setChartEngine] = useState<'pipnex' | 'tradingview'>('pipnex');
 
   const activeAccount = store.getActiveAccount();
 
@@ -255,25 +257,71 @@ export const AITradingPage: React.FC = () => {
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0">
         {/* Left Column: Full Authentic TradingView Chart Canvas */}
         <div className="lg:col-span-8 flex flex-col border-b lg:border-b-0 lg:border-r border-[#181d28] bg-[#07090e] relative min-h-[500px]">
-          {/* Chart Header Bar */}
+          {/* Chart Header Bar & Engine Switcher */}
           <div className="px-4 py-2 border-b border-[#141824] bg-[#0c0f17] flex items-center justify-between text-xs font-mono text-slate-400">
             <div className="flex items-center gap-3">
               <span className="font-bold text-white">{selectedAsset.symbol}</span>
               <span className="text-emerald-400 font-bold">${livePrice.toFixed(2)}</span>
-              <span className="text-slate-500 hidden sm:inline">TradingView Live Feed ({selectedAsset.tv})</span>
+            </div>
+
+            <div className="flex items-center rounded-xl bg-[#111520] p-0.5 border border-[#1e2434] text-[11px] font-bold">
+              <button
+                onClick={() => setChartEngine('pipnex')}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 transition-all ${
+                  chartEngine === 'pipnex'
+                    ? 'bg-emerald-500 text-slate-950 font-extrabold shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <span>Pipnex AI Chart</span>
+              </button>
+              <button
+                onClick={() => setChartEngine('tradingview')}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 transition-all ${
+                  chartEngine === 'tradingview'
+                    ? 'bg-purple-600 text-white font-extrabold shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <span>TradingView</span>
+              </button>
             </div>
           </div>
 
-          {/* Genuine Embedded TradingView Widget */}
-          <div className="flex-1 w-full h-[520px] lg:h-full bg-[#07090e]">
-            <iframe
-              key={`${selectedAsset.tv}-${timeframe.val}`}
-              src={tvEmbedUrl}
-              title={`TradingView Chart ${selectedAsset.symbol}`}
-              className="w-full h-full border-0"
-              allow="fullscreen"
-              loading="eager"
-            />
+          {/* Genuine Embedded TradingView Widget or Pipnex Chart */}
+          <div className="flex-1 w-full min-h-[560px] bg-[#07090e]">
+            {chartEngine === 'pipnex' ? (
+              <OrderMappedChart
+                symbol={selectedAsset.symbol}
+                timeframe={timeframe.label}
+                activePosition={null}
+                latestSMCSetup={
+                  analysis?.setups?.[0]
+                    ? {
+                        symbol: selectedAsset.symbol,
+                        bias: analysis.bias,
+                        confidence: analysis.confidence,
+                        orderBlockPrice: analysis.setups[0].entry,
+                        entry: analysis.setups[0].entry,
+                        stopLoss: analysis.setups[0].stopLoss,
+                        takeProfit: analysis.setups[0].takeProfit,
+                        orderType: 'MARKET',
+                        rationale: analysis.setups[0].rationale,
+                      }
+                    : null
+                }
+                height={580}
+              />
+            ) : (
+              <iframe
+                key={`${selectedAsset.tv}-${timeframe.val}`}
+                src={tvEmbedUrl}
+                title={`TradingView Chart ${selectedAsset.symbol}`}
+                className="w-full h-full border-0 min-h-[560px]"
+                allow="fullscreen"
+                loading="eager"
+              />
+            )}
           </div>
         </div>
 
