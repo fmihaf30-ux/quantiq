@@ -199,7 +199,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
   const tradeSignal: TradeSignal | null = useMemo(() => {
     if (!showSignalLevels || livePrice <= 0) return null;
 
-    // A. Active MT5 Position
+    // A. Active MT5 Position (Executed Market Order -> locks onto candle)
     if (activePosition) {
       const isLong = activePosition.type.toLowerCase() === 'buy';
       const entry = activePosition.openPrice || livePrice;
@@ -211,6 +211,10 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         ? activePosition.takeProfit
         : isLong ? entry + defaultDist * 2.5 : entry - defaultDist * 2.5;
 
+      const entryTime = activePosition.openTime
+        ? Math.floor(new Date(activePosition.openTime).getTime() / 1000)
+        : undefined;
+
       return {
         direction: isLong ? 'LONG' : 'SHORT',
         entry,
@@ -218,6 +222,9 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         takeProfit1,
         confidence: 0.92,
         strategy: `MT5 #${activePosition.ticket}`,
+        orderType: 'MARKET',
+        entryTime,
+        ticket: activePosition.ticket,
       };
     }
 
@@ -225,6 +232,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     if (activeTool === 'LONG') {
       const entry = previewLimitPrice || livePrice;
       const risk = entry * 0.0035;
+      const isLimit = isLimitMode || (previewLimitPrice !== null && previewLimitPrice !== undefined);
       return {
         direction: 'LONG',
         entry,
@@ -232,12 +240,14 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         takeProfit1: entry + risk * 2.6,
         confidence: 0.88,
         strategy: 'Manual Long Tool',
+        orderType: isLimit ? 'LIMIT' : 'MARKET',
       };
     }
 
     if (activeTool === 'SHORT') {
       const entry = previewLimitPrice || livePrice;
       const risk = entry * 0.0035;
+      const isLimit = isLimitMode || (previewLimitPrice !== null && previewLimitPrice !== undefined);
       return {
         direction: 'SHORT',
         entry,
@@ -245,6 +255,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         takeProfit1: entry - risk * 2.6,
         confidence: 0.88,
         strategy: 'Manual Short Tool',
+        orderType: isLimit ? 'LIMIT' : 'MARKET',
       };
     }
 
@@ -260,6 +271,8 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
       if (rawConf > 1) rawConf = rawConf / 100;
       const confidence = rawConf || 0.87;
 
+      const isLimit = isLimitMode || latestSMCSetup.orderType === 'LIMIT' || (previewLimitPrice !== null && previewLimitPrice !== undefined);
+
       return {
         direction: isLong ? 'LONG' : 'SHORT',
         entry,
@@ -267,6 +280,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         takeProfit1,
         confidence,
         strategy: latestSMCSetup.orderType ? `${latestSMCSetup.orderType} (SMC)` : 'SMC Sweep + OB',
+        orderType: isLimit ? 'LIMIT' : 'MARKET',
       };
     }
 
@@ -280,6 +294,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
       const slDist = Math.max(Math.abs(entry - (isTrendBullish ? swingLow : swingHigh)), entry * 0.003);
       const stopLoss = isTrendBullish ? entry - slDist : entry + slDist;
       const takeProfit1 = isTrendBullish ? entry + slDist * 2.6 : entry - slDist * 2.6;
+      const isLimit = isLimitMode;
 
       return {
         direction: isTrendBullish ? 'LONG' : 'SHORT',
@@ -287,7 +302,8 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
         stopLoss,
         takeProfit1,
         confidence: 0.87,
-        strategy: 'SMC Sweep + OB',
+        strategy: isLimit ? 'SMC Limit Setup' : 'SMC Market Setup',
+        orderType: isLimit ? 'LIMIT' : 'MARKET',
       };
     }
 
@@ -296,6 +312,7 @@ export const OrderMappedChart: React.FC<OrderMappedChartProps> = ({
     activePosition,
     activeTool,
     previewLimitPrice,
+    isLimitMode,
     latestSMCSetup,
     candles,
     livePrice,

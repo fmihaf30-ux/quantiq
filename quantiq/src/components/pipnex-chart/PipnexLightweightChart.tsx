@@ -35,6 +35,9 @@ export interface TradeSignal {
   takeProfit2?: number | null;
   confidence?: number; // 0..1 (e.g., 0.85 -> "85%")
   strategy?: string;
+  orderType?: "MARKET" | "LIMIT";
+  entryTime?: number; // Unix timestamp in seconds of entry candle
+  ticket?: number;
 }
 
 export interface SmcZone {
@@ -134,6 +137,41 @@ export function sanitizeCandles(
   return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
+export function findEntryCandle(
+  candles: CandleData[],
+  entryPrice: number,
+  entryTime?: number
+): CandleData | null {
+  if (!candles || candles.length === 0) return null;
+
+  // 1. If entryTime is specified: find closest candle by timestamp
+  if (entryTime && entryTime > 0) {
+    let closest = candles[0];
+    let minDiff = Math.abs(candles[0].time - entryTime);
+    for (let i = 1; i < candles.length; i++) {
+      const diff = Math.abs(candles[i].time - entryTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = candles[i];
+      }
+    }
+    return closest;
+  }
+
+  // 2. If no entryTime, search backwards in the last 40 candles to find where price touched entryPrice
+  const recent = candles.slice(-40);
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const c = recent[i];
+    if (c.low <= entryPrice && c.high >= entryPrice) {
+      return c;
+    }
+  }
+
+  // 3. Fallback: default to recent candle (e.g. 8 candles back)
+  const fallbackIdx = Math.max(0, candles.length - 8);
+  return candles[fallbackIdx];
+}
+
 interface TradePositionOverlayProps {
   chart: IChartApi | null;
   series: ISeriesApi<"Candlestick"> | null;
@@ -141,6 +179,7 @@ interface TradePositionOverlayProps {
   visible: boolean;
   containerRef: React.RefObject<HTMLDivElement | null>;
   latestPrice?: number;
+  candles?: CandleData[];
 }
 
 interface ProjectedPositionCoords {
@@ -149,6 +188,9 @@ interface ProjectedPositionCoords {
   tp: number;
   tp1: number;
   containerWidth: number;
+  boxLeft: number;
+  boxWidth: number;
+  isLimitOrder: boolean;
 }
 
 export function TradePositionOverlay({
@@ -158,6 +200,7 @@ export function TradePositionOverlay({
   visible,
   containerRef,
   latestPrice,
+  candles,
 }: TradePositionOverlayProps) {
   const [coords, setCoords] = useState<ProjectedPositionCoords | null>(null);
   const rafRef = useRef<number>(0);
@@ -180,17 +223,77 @@ export function TradePositionOverlay({
         return;
       }
 
+      const containerWidth = containerRef.current.clientWidth;
+      const rightAxisOffset = 70 + 8;
+
+      const isLimitOrder =
+        signal.orderType === "LIMIT" ||
+        (signal.orderType !== "MARKET" &&
+          latestPrice != null &&
+          Math.abs(signal.entry - latestPrice) / latestPrice > 0.0015);
+
+      let boxLeft: number;
+      let boxWidth: number;
+
+      if (isLimitOrder) {
+        // LIMIT ORDER: The object sits far to the right, projected forward near the price scale (Screenshot 1)
+        boxWidth = Math.max(140, Math.min(220, containerWidth * 0.18));
+        boxLeft = containerWidth - rightAxisOffset - boxWidth;
+      } else {
+        // MARKET ORDER / EXECUTED ORDER: Attached directly ON THE CANDLE of execution (Screenshot 2)
+        const timeScale = chart.timeScale();
+        const entryCandle = findEntryCandle(
+          candles || [],
+          signal.entry,
+          signal.entryTime
+        );
+
+        const entryCoord = entryCandle
+          ? timeScale.timeToCoordinate(entryCandle.time as Time)
+          : null;
+
+        const lastCandle =
+          candles && candles.length > 0 ? candles[candles.length - 1] : null;
+        const lastCoord = lastCandle
+          ? timeScale.timeToCoordinate(lastCandle.time as Time)
+          : null;
+
+        if (entryCoord !== null) {
+          const startX = Number(entryCoord);
+          const lastX = lastCoord !== null ? Number(lastCoord) : startX + 60;
+          // Project forward past the latest candle by ~16 bars (approx 90px)
+          const forwardOffset = 90;
+          const targetEndX = Math.min(
+            containerWidth - rightAxisOffset,
+            Math.max(startX + 110, lastX + forwardOffset)
+          );
+          boxLeft = startX;
+          boxWidth = Math.max(90, targetEndX - startX);
+        } else {
+          // If entry candle is scrolled off to the left of the screen
+          boxLeft = 0;
+          const lastX = lastCoord !== null ? Number(lastCoord) : 200;
+          boxWidth = Math.min(
+            containerWidth - rightAxisOffset,
+            Math.max(120, lastX + 90)
+          );
+        }
+      }
+
       setCoords({
         entry: Number(entryY),
         sl: Number(slY),
         tp: Number(tp2Y ?? tp1Y),
         tp1: Number(tp1Y),
-        containerWidth: containerRef.current.clientWidth,
+        containerWidth,
+        boxLeft,
+        boxWidth,
+        isLimitOrder,
       });
     } catch {
       setCoords(null);
     }
-  }, [chart, series, signal, visible, containerRef]);
+  }, [chart, series, signal, visible, containerRef, latestPrice, candles]);
 
   useEffect(() => {
     if (!chart || !series || !signal || !visible) {
@@ -231,6 +334,9 @@ export function TradePositionOverlay({
   const slY = coords.sl;
   const tpY = coords.tp;
   const tp1Y = coords.tp1;
+  const boxLeft = coords.boxLeft;
+  const boxWidth = coords.boxWidth;
+  const isLimitOrder = coords.isLimitOrder;
 
   const slBoxTop = Math.min(entryY, slY);
   const slBoxHeight = Math.abs(slY - entryY);
@@ -245,20 +351,13 @@ export function TradePositionOverlay({
   const confidenceText = signal.confidence
     ? `${Math.round(signal.confidence * 100)}%`
     : null;
-  const isLimitOrder =
-    latestPrice != null &&
-    Math.abs(signal.entry - latestPrice) / latestPrice > 0.001;
-
-  const rightAxisOffset = 70 + 8;
-  const boxWidth = Math.max(140, Math.min(220, coords.containerWidth * 0.18));
-  const boxLeft = coords.containerWidth - rightAxisOffset - boxWidth;
 
   return (
     <div
       className="absolute inset-0 pointer-events-none z-[5]"
       style={{ overflow: "hidden" }}
     >
-      {/* 1. Red Stop-Loss (Risk) Box */}
+      {/* 1. Stop-Loss (Risk) Box */}
       <div
         className="absolute transition-all duration-75"
         style={{
@@ -266,15 +365,31 @@ export function TradePositionOverlay({
           left: `${boxLeft}px`,
           width: `${boxWidth}px`,
           height: `${Math.max(slBoxHeight, 2)}px`,
-          background: "rgba(239, 68, 68, 0.25)",
-          borderTop: isShort ? "2px dashed rgba(239, 68, 68, 0.8)" : "none",
-          borderBottom: isShort ? "none" : "2px dashed rgba(239, 68, 68, 0.8)",
-          borderLeft: "1px dashed rgba(239, 68, 68, 0.3)",
-          borderRight: "1px dashed rgba(239, 68, 68, 0.3)",
+          background: isLimitOrder
+            ? "rgba(239, 68, 68, 0.25)"
+            : isShort
+              ? "rgba(56, 189, 248, 0.18)"
+              : "rgba(148, 163, 184, 0.18)",
+          borderTop: isShort
+            ? isLimitOrder
+              ? "2px dashed rgba(239, 68, 68, 0.8)"
+              : "1.5px solid rgba(56, 189, 248, 0.8)"
+            : "none",
+          borderBottom: isShort
+            ? "none"
+            : isLimitOrder
+              ? "2px dashed rgba(239, 68, 68, 0.8)"
+              : "1.5px solid rgba(239, 68, 68, 0.8)",
+          borderLeft: isLimitOrder
+            ? "1px dashed rgba(239, 68, 68, 0.3)"
+            : "1px solid rgba(148, 163, 184, 0.35)",
+          borderRight: isLimitOrder
+            ? "1px dashed rgba(239, 68, 68, 0.3)"
+            : "1px solid rgba(148, 163, 184, 0.35)",
         }}
       />
 
-      {/* 2. Green Take-Profit (Reward) Box */}
+      {/* 2. Take-Profit (Reward) Box */}
       <div
         className="absolute transition-all duration-75"
         style={{
@@ -282,13 +397,79 @@ export function TradePositionOverlay({
           left: `${boxLeft}px`,
           width: `${boxWidth}px`,
           height: `${Math.max(tpBoxHeight, 2)}px`,
-          background: "rgba(34, 197, 94, 0.20)",
-          borderTop: isShort ? "none" : "2px dashed rgba(34, 197, 94, 0.8)",
-          borderBottom: isShort ? "2px dashed rgba(34, 197, 94, 0.8)" : "none",
-          borderLeft: "1px dashed rgba(34, 197, 94, 0.3)",
-          borderRight: "1px dashed rgba(34, 197, 94, 0.3)",
+          background: isLimitOrder
+            ? "rgba(34, 197, 94, 0.20)"
+            : isShort
+              ? "rgba(239, 68, 68, 0.22)"
+              : "rgba(56, 189, 248, 0.18)",
+          borderTop: isShort
+            ? "none"
+            : isLimitOrder
+              ? "2px dashed rgba(34, 197, 94, 0.8)"
+              : "1.5px solid rgba(56, 189, 248, 0.85)",
+          borderBottom: isShort
+            ? isLimitOrder
+              ? "2px dashed rgba(34, 197, 94, 0.8)"
+              : "1.5px solid rgba(239, 68, 68, 0.85)"
+            : "none",
+          borderLeft: isLimitOrder
+            ? "1px dashed rgba(34, 197, 94, 0.3)"
+            : "1px solid rgba(56, 189, 248, 0.45)",
+          borderRight: isLimitOrder
+            ? "1px dashed rgba(34, 197, 94, 0.3)"
+            : "1px solid rgba(56, 189, 248, 0.45)",
         }}
       />
+
+      {/* Dividing Entry Line across the Box */}
+      <div
+        className="absolute"
+        style={{
+          top: `${entryY}px`,
+          left: `${boxLeft}px`,
+          width: `${boxWidth}px`,
+          height: 0,
+          borderTop: isLimitOrder
+            ? "1.5px dashed #3B82F6"
+            : "1.5px solid rgba(255, 255, 255, 0.75)",
+        }}
+      />
+
+      {/* TradingView Selection Grip Handles (Matching Screenshot 2) */}
+      {!isLimitOrder && (
+        <>
+          {/* Top-Left */}
+          <div
+            className="absolute h-1.5 w-1.5 rounded-sm bg-white border border-sky-400 -translate-x-1/2 -translate-y-1/2"
+            style={{ top: `${Math.min(tpBoxTop, slBoxTop)}px`, left: `${boxLeft}px` }}
+          />
+          {/* Top-Right */}
+          <div
+            className="absolute h-1.5 w-1.5 rounded-sm bg-white border border-sky-400 translate-x-1/2 -translate-y-1/2"
+            style={{ top: `${Math.min(tpBoxTop, slBoxTop)}px`, left: `${boxLeft + boxWidth}px` }}
+          />
+          {/* Bottom-Left */}
+          <div
+            className="absolute h-1.5 w-1.5 rounded-sm bg-white border border-sky-400 -translate-x-1/2 translate-y-1/2"
+            style={{ top: `${Math.max(tpBoxTop + tpBoxHeight, slBoxTop + slBoxHeight)}px`, left: `${boxLeft}px` }}
+          />
+          {/* Bottom-Right */}
+          <div
+            className="absolute h-1.5 w-1.5 rounded-sm bg-white border border-sky-400 translate-x-1/2 translate-y-1/2"
+            style={{ top: `${Math.max(tpBoxTop + tpBoxHeight, slBoxTop + slBoxHeight)}px`, left: `${boxLeft + boxWidth}px` }}
+          />
+          {/* Entry-Left */}
+          <div
+            className="absolute h-1.5 w-1.5 rounded-sm bg-white border border-sky-400 -translate-x-1/2 -translate-y-1/2"
+            style={{ top: `${entryY}px`, left: `${boxLeft}px` }}
+          />
+          {/* Entry-Right */}
+          <div
+            className="absolute h-1.5 w-1.5 rounded-sm bg-white border border-sky-400 translate-x-1/2 -translate-y-1/2"
+            style={{ top: `${entryY}px`, left: `${boxLeft + boxWidth}px` }}
+          />
+        </>
+      )}
 
       {/* 3. Center Risk:Reward Ratio Pill (Above Entry) */}
       <div
@@ -298,7 +479,7 @@ export function TradePositionOverlay({
           left: `${boxLeft + 16}px`,
         }}
       >
-        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-sky-950/80 text-sky-300 border border-sky-500/40 shadow-sm backdrop-blur-[2px]">
+        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-sky-950/85 text-sky-300 border border-sky-500/40 shadow-sm backdrop-blur-[2px]">
           {rrText}
         </span>
       </div>
@@ -309,7 +490,7 @@ export function TradePositionOverlay({
         style={{
           top: `${entryY - 11}px`,
           left: `${boxLeft}px`,
-          maxWidth: `${boxWidth}px`,
+          maxWidth: `${Math.max(160, boxWidth)}px`,
         }}
       >
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#3B82F6] text-white text-[10px] font-bold shadow-md truncate">
@@ -317,7 +498,7 @@ export function TradePositionOverlay({
           <span>
             {isLimitOrder
               ? `Buy Limit Order ${signal.entry.toFixed(2)}`
-              : `${signal.direction === "LONG" ? "Buy" : "Sell"} ${isLimitOrder ? "Limit" : "Order"} ${signal.entry.toFixed(2)}`}
+              : `${signal.direction === "LONG" ? "Buy" : "Sell"} Order ${signal.entry.toFixed(2)}`}
           </span>
         </div>
       </div>
@@ -373,7 +554,7 @@ export function TradePositionOverlay({
       <div
         className="absolute flex items-center gap-1.5"
         style={{
-          top: `${Math.max(entryY, slY) + 4}px`,
+          top: `${Math.max(entryY, slY) + 6}px`,
           left: `${boxLeft + 12}px`,
         }}
       >
@@ -387,7 +568,7 @@ export function TradePositionOverlay({
           {signal.direction}
         </span>
         <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-[#141a28] text-slate-300 border border-[#232d44]">
-          {signal.strategy || "SMC OB+FVG"}
+          {signal.strategy || (isLimitOrder ? "SMC Limit Setup" : "MT5 Market Position")}
         </span>
       </div>
     </div>
@@ -1194,6 +1375,7 @@ export function PipnexLightweightChart({
           visible={showSignalLevels && overlaysVisible}
           containerRef={chartContainerRef}
           latestPrice={hoveredOhlc?.close}
+          candles={candles}
         />
 
         {/* Layer 2B: Smart Money Concepts DOM Overlay */}
