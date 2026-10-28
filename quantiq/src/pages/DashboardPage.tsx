@@ -23,67 +23,18 @@ import {
   CheckCircle2,
   AlertCircle,
   Clock,
-  Lock
+  Lock,
+  Radio
 } from 'lucide-react';
-
-interface EconomicEvent {
-  id: string;
-  title: string;
-  country: string;
-  impact: 'High' | 'Medium' | 'Low';
-  dateStr: string;
-  timeRemaining: string;
-  consensus?: string;
-  previous?: string;
-}
-
-interface NewsSignal {
-  id: string;
-  eventId: string;
-  eventTitle: string;
-  symbol: string;
-  action: 'BUY' | 'SELL';
-  entry: number;
-  stopLoss: number;
-  takeProfit: number;
-  catalyst: string;
-  confidence: number;
-  releaseDateStr: string;
-  status: 'ARMED_AWAITING_RELEASE' | 'LIVE_RELEASE' | 'EXECUTED';
-}
-
-const ECONOMIC_EVENTS: EconomicEvent[] = [
-  {
-    id: 'ev-nfp',
-    title: 'Non-Farm Payrolls (NFP) & Unemployment',
-    country: 'US',
-    impact: 'High',
-    dateStr: 'First Friday of Month, 13:30 UTC',
-    timeRemaining: 'Upcoming Major Release',
-    consensus: '165K',
-    previous: '254K',
-  },
-  {
-    id: 'ev-cpi',
-    title: 'Consumer Price Index (CPI) Inflation Rate',
-    country: 'US',
-    impact: 'High',
-    dateStr: 'Monthly Release, 13:30 UTC',
-    timeRemaining: 'Upcoming Major Release',
-    consensus: '2.4%',
-    previous: '2.5%',
-  },
-  {
-    id: 'ev-fomc',
-    title: 'FOMC Interest Rate Decision & Statement',
-    country: 'US',
-    impact: 'High',
-    dateStr: 'FOMC Policy Meeting, 18:00 UTC',
-    timeRemaining: 'Upcoming Major Release',
-    consensus: '4.75%',
-    previous: '5.00%',
-  },
-];
+import { 
+  getLiveEconomicCalendar, 
+  evaluateEventProximity, 
+  evaluateEventRisk, 
+  buildNewsSignal, 
+  type NewsEvent, 
+  type PipnexNewsSignal 
+} from '../lib/news';
+import { NewsSignalCard } from '../components/NewsSignalCard';
 
 export const DashboardPage: React.FC = () => {
   const [accounts, setAccounts] = useState<MT5Account[]>(store.getAccounts());
@@ -93,24 +44,13 @@ export const DashboardPage: React.FC = () => {
   const [isStrategyModalOpen, setIsStrategyModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
 
-  // Economic News Signals strictly for NFP / CPI / FOMC
+  // Economic News Signals strictly for NFP / CPI / FOMC (Pipnex News IQ Engine)
+  const [economicEvents, setEconomicEvents] = useState<NewsEvent[]>(() => getLiveEconomicCalendar('XAUUSD'));
   const [analyzingEventId, setAnalyzingEventId] = useState<string | null>(null);
-  const [activeSignals, setActiveSignals] = useState<NewsSignal[]>([
-    {
-      id: 'sig-fomc-1',
-      eventId: 'ev-fomc',
-      eventTitle: 'FOMC Interest Rate Decision',
-      symbol: 'XAUUSD',
-      action: 'BUY',
-      entry: 4142.50,
-      stopLoss: 4130.00,
-      takeProfit: 4175.00,
-      catalyst: 'Federal Reserve rate trajectory model shows safe-haven liquidity build-up. Execution arms automatically during release window.',
-      confidence: 94,
-      releaseDateStr: 'Scheduled Meeting @ 18:00 UTC',
-      status: 'ARMED_AWAITING_RELEASE',
-    },
-  ]);
+  const [activeSignals, setActiveSignals] = useState<PipnexNewsSignal[]>(() => {
+    const cal = getLiveEconomicCalendar('XAUUSD');
+    return [buildNewsSignal(cal[0], 'XAUUSD', 4050.0)];
+  });
   const [executingSignalId, setExecutingSignalId] = useState<string | null>(null);
   const [copiedRef, setCopiedRef] = useState(false);
 
@@ -178,66 +118,51 @@ export const DashboardPage: React.FC = () => {
     };
   }, [activeAccount?.id]);
 
-  const handleAIAnalyzeEvent = async (event: EconomicEvent) => {
-    setAnalyzingEventId(event.id);
+  const handleAIAnalyzeEvent = async (event: NewsEvent) => {
+    setAnalyzingEventId(event.eventId);
     const gold = await fetchLiveMarketPrice('XAUUSD');
     const entry = Number(gold.price.toFixed(2));
 
     setTimeout(() => {
-      const isBuy = event.impact === 'High' || event.title.includes('PMI');
-      const diff = 8.5;
-      const newSignal: NewsSignal = {
-        id: `sig-${Date.now()}`,
-        eventId: event.id,
-        eventTitle: event.title,
-        symbol: 'XAUUSD',
-        action: isBuy ? 'BUY' : 'SELL',
-        entry,
-        stopLoss: isBuy ? entry - diff : entry + diff,
-        takeProfit: isBuy ? entry + diff * 2.2 : entry - diff * 2.2,
-        catalyst: `Macro expectation model for ${event.title} (${event.country}). Setup armed for volatility injection.`,
-        confidence: 91,
-        releaseDateStr: event.dateStr,
-        status: 'ARMED_AWAITING_RELEASE', // Pre-event strategy, not live yet!
-      };
-
-      setActiveSignals((prev) => [newSignal, ...prev.filter((s) => s.eventId !== event.id)]);
+      const newSignal = buildNewsSignal(event, 'XAUUSD', entry);
+      setActiveSignals((prev) => [newSignal, ...prev.filter((s) => s.eventId !== event.eventId)]);
       setAnalyzingEventId(null);
-    }, 1200);
+    }, 800);
   };
 
-  const handleToggleSimulateLive = (signalId: string) => {
-    setActiveSignals((prev) =>
-      prev.map((s) =>
-        s.id === signalId
-          ? {
-              ...s,
-              status: s.status === 'ARMED_AWAITING_RELEASE' ? 'LIVE_RELEASE' : 'ARMED_AWAITING_RELEASE',
-            }
-          : s
-      )
-    );
-  };
-
-  const handleExecuteNewsSignal = async (sig: NewsSignal) => {
+  const handleExecuteNewsSignal = async (sig: PipnexNewsSignal) => {
     if (!activeAccount) {
       alert('Please connect an MT5 account first.');
       return;
     }
 
+    if (sig.risk.isExecutionGated) {
+      const proceed = confirm(
+        `⚠️ EXECUTION CAUTION GATED:\n${sig.risk.cautionMessage}\n\nDo you want to override and execute on MT5 anyway?`
+      );
+      if (!proceed) return;
+    }
+
+    if (!sig.entrySuggestion) {
+      alert('No entry parameters defined for this news signal.');
+      return;
+    }
+
     setExecutingSignalId(sig.id);
     try {
+      const isBuy = sig.direction === 'BUY';
       let ticket = Math.floor(1000000 + Math.random() * 9000000);
+      const { entry, stopLoss, takeProfit } = sig.entrySuggestion;
 
       if (activeAccount.metaapiAccountId) {
         const res = await executeMetaApiTrade({
           metaapiAccountId: activeAccount.metaapiAccountId,
           symbol: sig.symbol,
-          actionType: sig.action === 'BUY' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL',
+          actionType: isBuy ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL',
           volume: 0.1,
-          stopLoss: sig.stopLoss,
-          takeProfit: sig.takeProfit,
-          comment: `Quantiq News ${sig.eventTitle.slice(0, 10)}`,
+          stopLoss,
+          takeProfit,
+          comment: `NewsIQ ${sig.event.name.slice(0, 10)}`,
         });
         if (res?.numericCode) ticket = res.numericCode;
       }
@@ -246,18 +171,17 @@ export const DashboardPage: React.FC = () => {
         mt5AccountId: activeAccount.id,
         ticket,
         symbol: sig.symbol,
-        type: sig.action === 'BUY' ? 'buy' : 'sell',
+        type: isBuy ? 'buy' : 'sell',
         volume: 0.1,
-        openPrice: sig.entry,
-        currentPrice: sig.entry,
-        stopLoss: sig.stopLoss,
-        takeProfit: sig.takeProfit,
+        openPrice: entry,
+        currentPrice: entry,
+        stopLoss,
+        takeProfit,
         profit: 0,
         openTime: new Date().toISOString(),
       });
 
-      alert(`✅ Macro News Order #${ticket} sent to MT5 (${activeAccount.broker})!\n${sig.action} 0.10 lots of ${sig.symbol} @ ${sig.entry}`);
-      setActiveSignals((prev) => prev.map((s) => (s.id === sig.id ? { ...s, status: 'EXECUTED' } : s)));
+      alert(`✅ Macro News Order #${ticket} sent to MT5 (${activeAccount.broker})!\n${sig.direction} 0.10 lots of ${sig.symbol} @ ${entry}`);
     } catch (err: any) {
       alert(`MT5 Execution Notice: ${err.message || 'Signal forwarded'}`);
     } finally {
@@ -387,57 +311,69 @@ export const DashboardPage: React.FC = () => {
         </div>
 
         <div className="space-y-2">
-          {ECONOMIC_EVENTS.map((ev) => (
-            <div
-              key={ev.id}
-              className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-[#202532] bg-[#11131a] p-4 hover:border-purple-500/30 transition-all"
-            >
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`h-2.5 w-2.5 rounded-full ${
-                      ev.impact === 'High' ? 'bg-red-500' : 'bg-amber-400'
-                    }`}
-                  />
-                  <span className="text-[11px] font-bold text-slate-400 uppercase">
-                    {ev.impact} Economic {ev.country}
+          {economicEvents.map((ev) => {
+            const prox = evaluateEventProximity(ev);
+            const risk = evaluateEventRisk(ev);
+            return (
+              <div
+                key={ev.eventId}
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-[#202532] bg-[#11131a] p-4 hover:border-purple-500/30 transition-all"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`h-2.5 w-2.5 rounded-full ${
+                        ev.impact === 'high' ? 'bg-red-500' : 'bg-amber-400'
+                      }`}
+                    />
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">
+                      {ev.impact} Impact · {ev.country} ({ev.currency})
+                    </span>
+                    {risk.isExecutionGated && (
+                      <span className="text-[10px] font-extrabold bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded-full border border-rose-500/30 animate-pulse">
+                        {risk.riskState}
+                      </span>
+                    )}
+                  </div>
+                  <h4 className="text-sm font-bold text-white">{ev.name}</h4>
+                  <div className="flex items-center gap-3 text-[11px] text-slate-400 font-mono">
+                    <span>{new Date(ev.eventTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({ev.timezone.split('/')[1] || ev.timezone})</span>
+                    {ev.consensus && <span>Consensus: <strong className="text-slate-200">{ev.consensus}</strong> | Previous: <strong className="text-slate-200">{ev.previous}</strong></span>}
+                    {ev.actual && <span className="text-emerald-400">Actual: <strong>{ev.actual}</strong></span>}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between sm:justify-end gap-4">
+                  <span className={`font-mono text-xs font-semibold ${
+                    prox.state === 'IMMINENT' || prox.state === 'ACTIVE' ? 'text-rose-400 font-bold animate-pulse' : 'text-slate-300'
+                  }`}>
+                    {prox.timeLabel}
                   </span>
-                </div>
-                <h4 className="text-sm font-bold text-white">{ev.title}</h4>
-                <div className="flex items-center gap-3 text-[11px] text-slate-400 font-mono">
-                  <span>{ev.dateStr}</span>
-                  {ev.consensus && <span>Consensus: {ev.consensus} | Previous: {ev.previous}</span>}
+
+                  <button
+                    onClick={() => handleAIAnalyzeEvent(ev)}
+                    disabled={analyzingEventId === ev.eventId}
+                    className="flex items-center gap-1.5 rounded-xl border border-[#2d3548] bg-[#181d28] px-3.5 py-1.5 text-xs font-bold text-slate-200 hover:text-white hover:border-purple-500/60 hover:bg-[#202636] transition-all disabled:opacity-50"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+                    <span>{analyzingEventId === ev.eventId ? 'Analyzing...' : 'AI Council'}</span>
+                  </button>
                 </div>
               </div>
-
-              <div className="flex items-center justify-between sm:justify-end gap-4">
-                <span className="font-mono text-xs font-semibold text-slate-300">
-                  {ev.timeRemaining}
-                </span>
-
-                <button
-                  onClick={() => handleAIAnalyzeEvent(ev)}
-                  disabled={analyzingEventId === ev.id}
-                  className="flex items-center gap-1.5 rounded-xl border border-[#2d3548] bg-[#181d28] px-3.5 py-1.5 text-xs font-bold text-slate-200 hover:text-white hover:border-purple-500/60 hover:bg-[#202636] transition-all disabled:opacity-50"
-                >
-                  <Sparkles className="h-3.5 w-3.5 text-purple-400" />
-                  <span>{analyzingEventId === ev.id ? 'Analyzing...' : 'AI Analyze'}</span>
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
-      {/* News Signal (NFP/CPI) Section matching Screenshot 4 */}
-      <div className="rounded-3xl border border-[#242938] bg-[#10131a] p-6 space-y-4 shadow-xl">
-        <div className="flex items-center justify-between border-b border-[#1c212e] pb-3">
+      {/* Pipnex News IQ Signals & AI Council Section */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-5 w-5 text-[#c4f042]" />
             <div>
-              <h3 className="text-base font-extrabold text-white">News Signal (NFP / CPI / FOMC)</h3>
+              <h3 className="text-base font-extrabold text-white">Pipnex AI News Signals & Council Intelligence</h3>
               <p className="text-xs text-slate-400">
-                High-confidence trading signals from macro events (100% Unlocked & Free)
+                5-Desk AI Consensus · Econometric Scenario Matrix · Pre-News Execution Gating
               </p>
             </div>
           </div>
@@ -448,91 +384,17 @@ export const DashboardPage: React.FC = () => {
 
         {activeSignals.length === 0 ? (
           <p className="text-sm text-slate-400 text-center py-6">
-            No active signals. Click "AI Analyze" on an event above to generate a signal.
+            No active signals. Click "AI Council" on an event above to generate a signal.
           </p>
         ) : (
-          <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-4">
             {activeSignals.map((sig) => (
-              <div
+              <NewsSignalCard
                 key={sig.id}
-                className="flex flex-col md:flex-row md:items-center justify-between gap-4 rounded-2xl border border-[#222838] bg-[#0c0e14] p-4"
-              >
-                <div className="space-y-1.5 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
-                        sig.action === 'BUY'
-                          ? 'bg-emerald-500/20 text-emerald-400'
-                          : 'bg-red-500/20 text-red-400'
-                      }`}
-                    >
-                      {sig.action} {sig.symbol}
-                    </span>
-                    <span className="text-xs font-bold text-white">{sig.eventTitle}</span>
-                    
-                    {sig.status === 'ARMED_AWAITING_RELEASE' ? (
-                      <span className="flex items-center gap-1 rounded bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 text-[10px] font-bold text-amber-300">
-                        <Clock className="h-3 w-3 text-amber-400" />
-                        <span>ARMED — Awaits Release ({sig.releaseDateStr})</span>
-                      </span>
-                    ) : sig.status === 'LIVE_RELEASE' ? (
-                      <span className="flex items-center gap-1 rounded bg-emerald-500/20 border border-emerald-500/40 px-2 py-0.5 text-[10px] font-bold text-emerald-400 animate-pulse">
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                        <span>LIVE RELEASE WINDOW (DROPPED NOW)</span>
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1 rounded bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-400">
-                        <CheckCircle2 className="h-3 w-3 text-emerald-400" />
-                        <span>DISPATCHED TO MT5</span>
-                      </span>
-                    )}
-
-                    <span className="text-[10px] text-purple-400 font-mono font-bold">
-                      {sig.confidence}% Macro Confidence
-                    </span>
-                  </div>
-
-                  <p className="text-xs text-slate-300 leading-relaxed">{sig.catalyst}</p>
-
-                  <div className="flex items-center gap-4 text-xs font-mono text-slate-400 pt-1">
-                    <span>Entry: <strong className="text-white">{formatSymbolPrice(sig.symbol, sig.entry)}</strong></span>
-                    <span>SL: <strong className="text-red-400">{formatSymbolPrice(sig.symbol, sig.stopLoss)}</strong></span>
-                    <span>TP: <strong className="text-emerald-400">{formatSymbolPrice(sig.symbol, sig.takeProfit)}</strong></span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {sig.status === 'ARMED_AWAITING_RELEASE' ? (
-                    <>
-                      <div className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-[#141822] px-3.5 py-2 text-xs font-bold text-slate-400 select-none cursor-not-allowed">
-                        <Lock className="h-3.5 w-3.5 text-amber-400" />
-                        <span>Awaiting Release Time</span>
-                      </div>
-                      <button
-                        onClick={() => handleToggleSimulateLive(sig.id)}
-                        className="rounded-xl border border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/20 px-3 py-2 text-[11px] font-bold text-purple-300 transition-colors"
-                        title="Simulate numbers dropping now to test live MT5 execution spike"
-                      >
-                        Simulate Drop
-                      </button>
-                    </>
-                  ) : sig.status === 'LIVE_RELEASE' ? (
-                    <button
-                      onClick={() => handleExecuteNewsSignal(sig)}
-                      disabled={executingSignalId === sig.id}
-                      className="flex items-center gap-1.5 rounded-xl px-5 py-2.5 text-xs font-extrabold bg-emerald-500 text-slate-950 hover:bg-emerald-400 hover:scale-105 transition-all shadow-[0_0_15px_rgba(16,185,129,0.35)]"
-                    >
-                      <Zap className="h-4 w-4" />
-                      <span>{executingSignalId === sig.id ? 'Sending...' : 'Execute MT5 (News Spike)'}</span>
-                    </button>
-                  ) : (
-                    <div className="flex items-center gap-1.5 rounded-xl bg-slate-800 px-4 py-2 text-xs font-bold text-slate-400 cursor-default">
-                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                      <span>Dispatched</span>
-                    </div>
-                  )}
-                </div>
-              </div>
+                signal={sig}
+                onExecuteTrade={handleExecuteNewsSignal}
+                isExecuting={executingSignalId === sig.id}
+              />
             ))}
           </div>
         )}
