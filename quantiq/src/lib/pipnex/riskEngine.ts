@@ -154,6 +154,10 @@ export function evaluateRiskAndTargets({
   if (finalRR < minRR) {
     isTradable = false;
     reason = `reward_below_floor (${finalRR.toFixed(2)}R < ${minRR}R)`;
+  } else if (obstacles.some((o) => o.rr < 1.2)) {
+    const blockingObstacle = obstacles.find((o) => o.rr < 1.2)!;
+    isTradable = false;
+    reason = `blocked_by_immediate_obstacle (${blockingObstacle.type} sitting at ${blockingObstacle.price} with RR ${blockingObstacle.rr} < 1.2R)`;
   } else if (lateEntryProgress > 0.75) {
     isTradable = false;
     reason = `late_entry_exceeded (progress ${(lateEntryProgress * 100).toFixed(0)}% > 75%)`;

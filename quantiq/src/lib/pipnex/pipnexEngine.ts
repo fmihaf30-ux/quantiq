@@ -123,6 +123,12 @@ export function evaluatePipnexMarket(
       candidates.push({ price: swing.price, type: `Protected Swing ${swing.label}`, weight: 0.7 });
     }
   }
+  for (const fvg of fvgs) {
+    if (fvg.state === 'fresh' || fvg.state === 'tested') {
+      const edge = fvg.type === 'bullish' ? fvg.top : fvg.bottom;
+      candidates.push({ price: edge, type: `Opposing FVG (${fvg.type})`, weight: 0.85 });
+    }
+  }
 
   // 4. Candidate Generation
   const candidateSetups: CandidateSetup[] = [];
@@ -225,7 +231,7 @@ export function evaluatePipnexMarket(
         minRR: options.minRR ?? UNIVERSAL_MIN_RR,
       });
 
-      if (!riskResult.isTradable && !isInsideZone) continue; // Hard Gate 5: 2.1R floor
+      if (!riskResult.isTradable) continue; // Hard Gate 5: 2.1R floor and No Immediate Obstacle
 
       // Find entry candle if MARKET order
       let entryCandleTime: number | undefined;

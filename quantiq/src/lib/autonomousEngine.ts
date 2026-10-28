@@ -10,6 +10,7 @@ import {
 import { analyzeChartImageOrCandles, sanitizeAndValidateSetups } from './chartAnalysis';
 import { fetchLiveMarketPrice, formatSymbolPrice } from './livePrices';
 import { detectEngulfingConfirmation } from './smcSetupOne';
+import { evaluatePipnexMarket, type PipnexOpportunity } from './pipnex';
 
 export interface AutonomousEngineStatus {
   isRunning: boolean;
@@ -516,106 +517,96 @@ class AutonomousAccountEngine {
             .filter((z) => Date.now() - z.timestamp < 45 * 60 * 1000)
             .map((z) => z.price);
 
-          // A4b) Fetch Live M15 Candles for M.J.M's Setup For Life Diagnostic
-          const liveCandles = await fetchLiveCandles(targetSymbol, 'M15', 60);
+          // A4b) Fetch Live M15 Candles for Pipnex & SMC Suite
+          const liveCandles = await fetchLiveCandles(targetSymbol, 'M15', 80);
 
-          this.statusText = `Scanning institutional SMC structure for ${targetSymbol} M15...`;
+          this.statusText = `Scanning Pipnex mathematical structure for ${targetSymbol} M15...`;
           this.notify();
 
-          // A5) Deep SMC Scan: Detect Order Block Mitigation & Fair Value Gaps
-          const analysis = await analyzeChartImageOrCandles({
+          // A5) Run Deterministic Pipnex Mathematical Engine Suite
+          const pipnexOpportunity = evaluatePipnexMarket(liveCandles, {
             symbol: targetSymbol,
             timeframe: 'M15',
-            candles: liveCandles,
-            userQuery: `Autonomous high-probability SMC setup scan for ${targetSymbol}. Check Fair Value Gap & Order block mitigation.`,
-            exhaustedPriceZones: recentSpentZones,
-            requireEngulfing: settings.requireEngulfingConfirmation !== false,
+            currentPrice: livePrice,
+            minRR: 2.1,
           });
 
-          if (analysis.bias === 'neutral' || analysis.confidence === 'low' || !analysis.setups || analysis.setups.length === 0) {
-            this.statusText = `Watching ${targetSymbol} M15 — No valid unmitigated Order Block. Awaiting liquidity sweep...`;
+          if (!pipnexOpportunity || pipnexOpportunity.riskReward < 2.1) {
+            this.statusText = `Watching ${targetSymbol} M15 — No qualifying Pipnex setup (RR < 2.1 or structure in transition). Awaiting fresh base...`;
             this.notify();
             this.isProcessingLoop = false;
             return;
           }
 
-          const validSetups = sanitizeAndValidateSetups(analysis.setups || [], livePrice, decimals, analysis.bias || 'bullish');
+          const targetDirection: 'buy' | 'sell' = pipnexOpportunity.direction === 'LONG' ? 'buy' : 'sell';
 
-          if (validSetups && validSetups.length > 0) {
-            const setup = validSetups[0];
+          // A6) Invalidate if setup price matches any spent zone within 0.15%
+          const isSpent = recentSpentZones.some((zp) => Math.abs(pipnexOpportunity.entry - zp) / zp <= 0.0015);
+          if (isSpent) {
+            this.statusText = `Watching ${targetSymbol} — Setup @ ${pipnexOpportunity.entry} is within an exhausted Order Block. Awaiting new structure...`;
+            this.notify();
+            this.isProcessingLoop = false;
+            return;
+          }
 
-            // A6) Invalidate if setup price matches any spent zone within 0.15%
-            const isSpent = recentSpentZones.some((zp) => Math.abs(setup.entry - zp) / zp <= 0.0015);
-            if (isSpent) {
-              this.statusText = `Watching ${targetSymbol} — Setup @ ${setup.entry} is within an exhausted Order Block. Awaiting new structure...`;
+          // A7) SUB-FLOOR OBSTACLE HARD GATE
+          // Check if there is an unmitigated opposing FVG or opposing OB directly in the path within 1.5R
+          const riskDist = Math.abs(livePrice - pipnexOpportunity.stopLoss);
+          if (targetDirection === 'buy') {
+            const nearBearishFVG = pipnexOpportunity.rawEntities.fvgs.find(
+              (f) => f.type === 'bearish' && f.state !== 'invalidated' && !f.isInverted && f.bottom > livePrice && (f.bottom - livePrice) < riskDist * 1.5
+            );
+            const nearBearishOB = pipnexOpportunity.rawEntities.orderBlocks.find(
+              (ob) => ob.type === 'bearish' && (ob.state === 'fresh' || ob.state === 'tested') && ob.proximal > livePrice && (ob.proximal - livePrice) < riskDist * 1.5
+            );
+
+            if (nearBearishFVG || nearBearishOB) {
+              const obstacleLevel = nearBearishFVG ? nearBearishFVG.bottom : nearBearishOB!.proximal;
+              const obstacleType = nearBearishFVG ? 'Bearish FVG' : 'Bearish OB';
+              this.statusText = `Watching ${targetSymbol} — Direct buy blocked by opposing ${obstacleType} (${formatSymbolPrice(targetSymbol, obstacleLevel)}). Awaiting pullback to demand or clean inversion.`;
               this.notify();
               this.isProcessingLoop = false;
               return;
             }
+          } else {
+            const nearBullishFVG = pipnexOpportunity.rawEntities.fvgs.find(
+              (f) => f.type === 'bullish' && f.state !== 'invalidated' && !f.isInverted && f.top < livePrice && (livePrice - f.top) < riskDist * 1.5
+            );
+            const nearBullishOB = pipnexOpportunity.rawEntities.orderBlocks.find(
+              (ob) => ob.type === 'bullish' && (ob.state === 'fresh' || ob.state === 'tested') && ob.proximal < livePrice && (livePrice - ob.proximal) < riskDist * 1.5
+            );
 
-            // A7) Order Mode Selection (LIMIT vs MARKET)
-            const orderModePref = settings.orderDispatchMode || 'AUTO';
-            let chosenOrderType: 'MARKET' | 'LIMIT' = 'MARKET';
-            let execPrice = livePrice;
-            let orderRationale = '';
-
-            const targetEntry = setup.entry || livePrice;
-            const priceDistancePct = Math.abs(livePrice - targetEntry) / livePrice;
-            const isTappingOrderBlock = priceDistancePct <= 0.0015;
-
-            // M.J.M Lego Piece 5: Engulfing Candle Confirmation Trigger
-            const engulfing = detectEngulfingConfirmation(liveCandles);
-            const isEngulfingConfirmed = engulfing.isConfirmed && engulfing.direction === setup.direction;
-
-            if (settings.requireEngulfingConfirmation !== false && isTappingOrderBlock && !isEngulfingConfirmed) {
-              this.statusText = `${targetSymbol} tapping FVG+OB zone (${formatSymbolPrice(targetSymbol, livePrice)}). Awaiting ${setup.direction.toUpperCase()} Engulfing Candle close confirmation...`;
+            if (nearBullishFVG || nearBullishOB) {
+              const obstacleLevel = nearBullishFVG ? nearBullishFVG.top : nearBullishOB!.proximal;
+              const obstacleType = nearBullishFVG ? 'Bullish FVG' : 'Bullish OB';
+              this.statusText = `Watching ${targetSymbol} — Direct sell blocked by opposing ${obstacleType} (${formatSymbolPrice(targetSymbol, obstacleLevel)}). Awaiting pullback to supply or clean inversion.`;
               this.notify();
               this.isProcessingLoop = false;
               return;
             }
+          }
 
-            if (orderModePref === 'LIMIT') {
-              chosenOrderType = 'LIMIT';
-              execPrice = targetEntry;
-              orderRationale = `User Forced Limit @ Order Block Mitigation (${formatSymbolPrice(targetSymbol, execPrice)})`;
-            } else if (orderModePref === 'MARKET') {
-              chosenOrderType = 'MARKET';
-              execPrice = livePrice;
-              orderRationale = isEngulfingConfirmed
-                ? `M.J.M Engulfing Confirmation: ${engulfing.description} — Instant Market Execution`
-                : `User Forced Market Entry @ Current Spot (${formatSymbolPrice(targetSymbol, execPrice)})`;
-            } else {
-              if (isEngulfingConfirmed) {
-                chosenOrderType = 'MARKET';
-                execPrice = livePrice;
-                orderRationale = `M.J.M Confirmed Reversal: ${engulfing.description} inside FVG+OB zone — Instant Market Execution`;
-              } else if (isTappingOrderBlock) {
-                chosenOrderType = 'MARKET';
-                execPrice = livePrice;
-                orderRationale = `SMC Tapping Zone: Price is actively inside Order Block demand/supply (${formatSymbolPrice(targetSymbol, livePrice)}) — Instant Market Execution`;
-              } else {
-                chosenOrderType = 'LIMIT';
-                execPrice = targetEntry;
-                orderRationale = `SMC Retracement: Price is ${(priceDistancePct * 100).toFixed(2)}% away from Order Block (${formatSymbolPrice(targetSymbol, execPrice)}) — Placed Pending Limit`;
-              }
-            }
+          // A8) Order Mode Selection (LIMIT vs MARKET)
+          const orderModePref = settings.orderDispatchMode || 'AUTO';
+          let chosenOrderType: 'MARKET' | 'LIMIT' = 'MARKET';
+          let execPrice = livePrice;
+          let orderRationale = '';
 
-            // A8) Protective SL and Strict 1:2.2+ R:R Take Profit
-            const minSlDist = Math.max(decimals === 4 ? 0.0015 : 4.0, execPrice * 0.0025);
-            let sl = setup.stopLoss;
-            let tp = setup.takeProfit;
+          // If Pipnex says LIMIT, price is NOT inside the zone (it's mid-air or waiting for retracement)
+          if (orderModePref === 'LIMIT' || pipnexOpportunity.orderType === 'LIMIT') {
+            chosenOrderType = 'LIMIT';
+            execPrice = pipnexOpportunity.entry;
+            orderRationale = `${pipnexOpportunity.strategy}: Retracement pending limit at zone proximal (${formatSymbolPrice(targetSymbol, execPrice)})`;
+          } else {
+            // Price is confirmed inside the zone with no blocking obstacle
+            chosenOrderType = 'MARKET';
+            execPrice = livePrice;
+            orderRationale = `${pipnexOpportunity.strategy}: Price actively inside zone (${formatSymbolPrice(targetSymbol, execPrice)}) with 0 opposing obstacles — Instant Market Execution`;
+          }
 
-            if (setup.direction === 'buy') {
-              if (!sl || sl >= execPrice) sl = execPrice - minSlDist;
-              const slDist = Math.abs(execPrice - sl);
-              tp = Number((execPrice + slDist * 2.2).toFixed(decimals));
-              sl = Number(sl.toFixed(decimals));
-            } else {
-              if (!sl || sl <= execPrice) sl = execPrice + minSlDist;
-              const slDist = Math.abs(sl - execPrice);
-              tp = Number((execPrice - slDist * 2.2).toFixed(decimals));
-              sl = Number(sl.toFixed(decimals));
-            }
+          // A9) Stop Loss & Take Profit from Pipnex Stop-First & 2.1R+ Engine
+          const sl = pipnexOpportunity.stopLoss;
+          const tp = pipnexOpportunity.takeProfit1;
 
             // A9) Dynamic Lot Sizing & Free Margin Safety Cap
             let pointValue = 100;
@@ -647,19 +638,19 @@ class AutonomousAccountEngine {
 
             this.latestSMCSetup = {
               symbol: targetSymbol,
-              bias: analysis.bias,
-              confidence: analysis.confidence,
-              orderBlockPrice: setup.entry,
-              fvgLevel: (analysis.keyLevels || []).find((k) => k.kind === 'fvg')?.price,
+              bias: pipnexOpportunity.bias,
+              confidence: pipnexOpportunity.confidence,
+              orderBlockPrice: pipnexOpportunity.entry,
+              fvgLevel: (pipnexOpportunity.rawEntities.fvgs[0]?.bottom || pipnexOpportunity.rawEntities.fvgs[0]?.top),
               entry: execPrice,
               stopLoss: sl,
               takeProfit: tp,
               orderType: chosenOrderType,
-              rationale: orderRationale || setup.rationale,
+              rationale: orderRationale || pipnexOpportunity.rationale,
               timestamp: new Date().toLocaleTimeString(),
             };
 
-            this.statusText = `Placing Autonomous ${chosenOrderType} ${setup.direction.toUpperCase()} (${effectiveLot} Lots) on ${targetSymbol}...`;
+            this.statusText = `Placing Autonomous ${chosenOrderType} ${targetDirection.toUpperCase()} (${effectiveLot} Lots) on ${targetSymbol}...`;
             this.notify();
 
             let ticket = Math.floor(1000000 + Math.random() * 9000000);
@@ -667,7 +658,7 @@ class AutonomousAccountEngine {
               const execRes = await executeMetaApiTrade({
                 metaapiAccountId: activeAccount.metaapiAccountId,
                 symbol: targetSymbol,
-                actionType: setup.direction === 'buy' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL',
+                actionType: targetDirection === 'buy' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL',
                 orderType: chosenOrderType,
                 price: execPrice,
                 volume: effectiveLot,
@@ -685,7 +676,7 @@ class AutonomousAccountEngine {
                 mt5AccountId: activeAccount.id,
                 ticket,
                 symbol: targetSymbol,
-                type: setup.direction,
+                type: targetDirection,
                 volume: effectiveLot,
                 openPrice: execPrice,
                 currentPrice: execPrice,
@@ -704,9 +695,8 @@ class AutonomousAccountEngine {
               botId: 'autonomous-growth-engine',
               userId: activeAccount.userId,
               type: 'trade',
-              message: `⚡ SMC AUTOPILOT: Placed ${chosenOrderType} ${setup.direction.toUpperCase()} (${effectiveLot} lots) on ${targetSymbol} @ ${formatSymbolPrice(targetSymbol, execPrice)} | SL: ${formatSymbolPrice(targetSymbol, sl)}, TP: ${formatSymbolPrice(targetSymbol, tp)} | Mode: ${orderRationale}`,
+              message: `⚡ SMC AUTOPILOT: Placed ${chosenOrderType} ${targetDirection.toUpperCase()} (${effectiveLot} lots) on ${targetSymbol} @ ${formatSymbolPrice(targetSymbol, execPrice)} | SL: ${formatSymbolPrice(targetSymbol, sl)}, TP: ${formatSymbolPrice(targetSymbol, tp)} | Mode: ${orderRationale}`,
             });
-          }
         }
         // =========================================================================
         // BRANCH B: INSTITUTIONAL SMC SCALE-IN (PYRAMIDING INTO CONFIRMED WINNERS)
